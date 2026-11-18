@@ -1,0 +1,33 @@
+[Unit]
+Description=Law Study Web Application
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=lawstudy
+Group=lawstudy
+WorkingDirectory=/srv/law-study
+EnvironmentFile=/etc/law-study/law-study.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/law-study/.venv/bin/uvicorn backend.app:app --host 127.0.0.1 --port 8765 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+# Least-privilege hardening. Only the database directory is writable.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+ReadWritePaths=/srv/law-study/data
+
+[Install]
+WantedBy=multi-user.target

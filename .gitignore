@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+.env
+.browser-test/
+.testdata/
