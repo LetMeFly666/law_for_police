@@ -1,7 +1,7 @@
 [Unit]
-Description=Law Study Web Application
-After=network.target
-Wants=network.target
+Description=Law Study Learning Book (Go + MySQL)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -9,13 +9,11 @@ User=lawstudy
 Group=lawstudy
 WorkingDirectory=/srv/law-study
 EnvironmentFile=/etc/law-study/law-study.env
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/srv/law-study/.venv/bin/uvicorn backend.app:app --host 127.0.0.1 --port 8765 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/srv/law-study/bin/lawstudy
 Restart=on-failure
 RestartSec=3
-UMask=0077
+TimeoutStopSec=15
 
-# Least-privilege hardening. Only the database directory is writable.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -26,8 +24,10 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 LockPersonality=true
 RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadWritePaths=/srv/law-study/data
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
