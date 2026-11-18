@@ -5,13 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=lawstudy
-Group=lawstudy
-WorkingDirectory=/srv/law-study
-EnvironmentFile=/etc/law-study/law-study.env
-ExecStart=/srv/law-study/bin/lawstudy
-Restart=on-failure
-RestartSec=3
+User=law_for_police
+Group=law_for_police
+WorkingDirectory=/srv/law_for_police
+EnvironmentFile=/etc/law_for_police/.env
+ExecStart=/srv/law_for_police/bin/lawstudy
+Restart=no
 TimeoutStopSec=15
 
 NoNewPrivileges=true
