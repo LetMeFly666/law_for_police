@@ -1,4 +1,4 @@
-const CACHE_NAME = 'law-study-shell-v1';
+const CACHE_NAME = 'law-study-shell-v2';
 const SHELL = [
   '/',
   '/app.js',

@@ -89,6 +89,7 @@ func (s *Server) routes() {
 	s.Mux.Handle("GET /api/study-time", s.requireAuth(http.HandlerFunc(s.getStudyTime)))
 	s.Mux.Handle("POST /api/study-time", s.requireAuth(http.HandlerFunc(s.addStudyTime)))
 	s.Mux.Handle("POST /api/feedback", s.optionalAuth(http.HandlerFunc(s.createFeedback)))
+	s.Mux.Handle("GET /api/feedback/mine", s.requireAuth(http.HandlerFunc(s.myFeedback)))
 	s.Mux.HandleFunc("GET /api/admin/overview", s.admin(s.adminOverview))
 	s.Mux.HandleFunc("GET /api/admin/users", s.admin(s.adminUsers))
 	s.Mux.HandleFunc("GET /api/admin/feedback", s.admin(s.listFeedback))
@@ -791,6 +792,31 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": pid, "notification_sent": mailSent})
 }
 
+func (s *Server) myFeedback(w http.ResponseWriter, r *http.Request) {
+	id := getIdentity(r)
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT id,category,content,status,created_at FROM feedback WHERE user_id=? ORDER BY created_at DESC LIMIT 100`, id.UserID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, category, content, status string
+		var createdAt int64
+		if err := rows.Scan(&id, &category, &content, &status, &createdAt); err != nil {
+			internalError(w, err)
+			return
+		}
+		items = append(items, map[string]any{"id": id, "category": category, "content": content, "status": status, "created_at": createdAt})
+	}
+	if err := rows.Err(); err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) notifyFeedback(nickname, email, category, content, id string) bool {
 	if !s.Cfg.FeedbackNotificationEnabled() {
 		return false
@@ -1186,6 +1212,16 @@ func (s *Server) requestBindEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := getIdentity(r)
+	var currentEmail string
+	var verified bool
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT COALESCE(email,''),email_verified FROM users WHERE id=?`, id.UserID).Scan(&currentEmail, &verified); err != nil {
+		internalError(w, err)
+		return
+	}
+	if verified && strings.EqualFold(strings.TrimSpace(currentEmail), email) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "already_bound": true, "email": currentEmail})
+		return
+	}
 	s.issueEmailCode(w, r, email, "bind", id.UserID)
 }
 func (s *Server) verifyBindEmail(w http.ResponseWriter, r *http.Request) {
