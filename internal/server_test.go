@@ -34,13 +34,13 @@ func TestEmailCodeHashUsesSecret(t *testing.T) {
 }
 
 func TestValidItemKey(t *testing.T) {
-	valid := []string{"profile", "settings", "note:judge-19", "favorite:single-2", "mastery:multi-3", "test:uuid-1"}
+	valid := []string{"profile", "settings", "note:judge-19", "note-text:judge-19", "note-strokes:judge-19", "favorite:single-2", "mastery:multi-3", "test:uuid-1"}
 	for _, key := range valid {
 		if !validItemKey(key) {
 			t.Errorf("validItemKey(%q) = false", key)
 		}
 	}
-	invalid := []string{"", "note:", "profile:extra", "notes:judge-19", strings.Repeat("x", 191)}
+	invalid := []string{"", "note:", "note-text:", "note-strokes:", "profile:extra", "notes:judge-19", strings.Repeat("x", 191)}
 	for _, key := range invalid {
 		if validItemKey(key) {
 			t.Errorf("validItemKey(%q) = true", key)
@@ -57,9 +57,37 @@ func TestEmbeddedHomeContainsStudyAndRecoveryUI(t *testing.T) {
 		t.Fatalf("GET / status = %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"const BANK =", "圈画批注", "永久设备连接码", "已为本设备创建学习账号"} {
+	for _, want := range []string{"const BANK =", "圈画批注", "永久设备连接码", "显示批注", "做题模式（默认）"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("embedded home page missing %q", want)
+		}
+	}
+}
+
+func TestEmbeddedAdminPage(t *testing.T) {
+	s := NewServer(nil, Config{})
+	r := httptest.NewRequest("GET", "/admin", nil)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("GET /admin status = %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"法律学习本 · 管理后台", "ADMIN_TOKEN", "/api/admin/overview", "用户列表"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("embedded admin page missing %q", want)
+		}
+	}
+}
+
+func TestAdminAPIRequiresToken(t *testing.T) {
+	s := NewServer(nil, Config{AdminToken: "correct-token"})
+	for _, path := range []string{"/api/admin/overview", "/api/admin/users", "/api/admin/feedback"} {
+		r := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != 403 {
+			t.Errorf("GET %s without token status = %d, want 403", path, w.Code)
 		}
 	}
 }

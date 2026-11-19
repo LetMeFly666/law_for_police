@@ -61,7 +61,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/api/") {
+		if r.URL.Path == "/" || r.URL.Path == "/admin" || r.URL.Path == "/admin/" || strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -83,6 +83,8 @@ func (s *Server) routes() {
 	s.Mux.Handle("GET /api/experiences/mine", s.requireAuth(http.HandlerFunc(s.myExperiences)))
 	s.Mux.Handle("POST /api/experiences", s.requireAuth(http.HandlerFunc(s.createExperience)))
 	s.Mux.Handle("POST /api/feedback", s.optionalAuth(http.HandlerFunc(s.createFeedback)))
+	s.Mux.HandleFunc("GET /api/admin/overview", s.admin(s.adminOverview))
+	s.Mux.HandleFunc("GET /api/admin/users", s.admin(s.adminUsers))
 	s.Mux.HandleFunc("GET /api/admin/feedback", s.admin(s.listFeedback))
 	s.Mux.HandleFunc("PATCH /api/admin/feedback/", s.admin(s.updateFeedback))
 	s.Mux.HandleFunc("/", s.staticFiles)
@@ -398,7 +400,7 @@ func validItemKey(k string) bool {
 	if len(k) == 0 || len(k) > 190 {
 		return false
 	}
-	for _, prefix := range []string{"note:", "favorite:", "mastery:", "test:"} {
+	for _, prefix := range []string{"note:", "note-text:", "note-strokes:", "favorite:", "mastery:", "test:"} {
 		if strings.HasPrefix(k, prefix) && len(k) > len(prefix) {
 			for _, r := range k[len(prefix):] {
 				if r < 0x20 || r == 0x7f {
@@ -520,6 +522,242 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": pid})
+}
+
+type adminNoteFlags struct {
+	text    bool
+	strokes int
+}
+
+type adminNoteStats struct {
+	notes          int
+	annotatedNotes int
+	strokes        int
+	bytes          int64
+}
+
+// collectAdminNoteStats counts one logical note per question. The v1 `note:`
+// record is still recognized, while current clients store text and strokes
+// independently to prevent editing one from overwriting the other.
+func (s *Server) collectAdminNoteStats(ctx context.Context) (map[string]adminNoteStats, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT user_id,item_key,value_json FROM user_items WHERE item_key LIKE 'note:%' OR item_key LIKE 'note-text:%' OR item_key LIKE 'note-strokes:%'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type logicalNote struct {
+		text    bool
+		strokes int
+	}
+	byUser := make(map[string]map[string]*logicalNote)
+	bytesByUser := make(map[string]int64)
+	for rows.Next() {
+		var userID, key, raw string
+		if err := rows.Scan(&userID, &key, &raw); err != nil {
+			return nil, err
+		}
+		bytesByUser[userID] += int64(len(raw))
+		qid := ""
+		if strings.HasPrefix(key, "note-text:") {
+			qid = strings.TrimPrefix(key, "note-text:")
+		}
+		if strings.HasPrefix(key, "note-strokes:") {
+			qid = strings.TrimPrefix(key, "note-strokes:")
+		}
+		if strings.HasPrefix(key, "note:") {
+			qid = strings.TrimPrefix(key, "note:")
+		}
+		if qid == "" {
+			continue
+		}
+		if byUser[userID] == nil {
+			byUser[userID] = make(map[string]*logicalNote)
+		}
+		if byUser[userID][qid] == nil {
+			byUser[userID][qid] = &logicalNote{}
+		}
+		entry := byUser[userID][qid]
+		switch {
+		case strings.HasPrefix(key, "note-text:"):
+			var text string
+			if json.Unmarshal([]byte(raw), &text) == nil && strings.TrimSpace(text) != "" {
+				entry.text = true
+			}
+		case strings.HasPrefix(key, "note-strokes:"):
+			var paths []struct {
+				Deleted bool `json:"deleted"`
+			}
+			if json.Unmarshal([]byte(raw), &paths) != nil {
+				var payload struct {
+					Strokes []struct {
+						Deleted bool `json:"deleted"`
+					} `json:"strokes"`
+				}
+				_ = json.Unmarshal([]byte(raw), &payload)
+				paths = payload.Strokes
+			}
+			active := 0
+			for _, stroke := range paths {
+				if !stroke.Deleted {
+					active++
+				}
+			}
+			if active > entry.strokes {
+				entry.strokes = active
+			}
+		case strings.HasPrefix(key, "note:"):
+			var legacy struct {
+				Text    string            `json:"text"`
+				Strokes []json.RawMessage `json:"strokes"`
+			}
+			if json.Unmarshal([]byte(raw), &legacy) == nil {
+				if strings.TrimSpace(legacy.Text) != "" {
+					entry.text = true
+				}
+				if len(legacy.Strokes) > entry.strokes {
+					entry.strokes = len(legacy.Strokes)
+				}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]adminNoteStats, len(byUser))
+	for userID, notes := range byUser {
+		stat := adminNoteStats{bytes: bytesByUser[userID]}
+		for _, note := range notes {
+			if note.text || note.strokes > 0 {
+				stat.notes++
+			}
+			if note.strokes > 0 {
+				stat.annotatedNotes++
+			}
+			stat.strokes += note.strokes
+		}
+		out[userID] = stat
+	}
+	return out, nil
+}
+
+func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	var users, devices, activeDevices, experiences, feedback, feedbackNew int64
+	queries := []struct {
+		query string
+		dest  *int64
+	}{
+		{`SELECT COUNT(*) FROM users`, &users},
+		{`SELECT COUNT(*) FROM devices`, &devices},
+		{`SELECT COUNT(*) FROM devices WHERE last_seen>=?`, &activeDevices},
+		{`SELECT COUNT(*) FROM experiences`, &experiences},
+		{`SELECT COUNT(*) FROM feedback`, &feedback},
+		{`SELECT COUNT(*) FROM feedback WHERE status='new'`, &feedbackNew},
+	}
+	for i, item := range queries {
+		var err error
+		if i == 2 {
+			err = s.DB.QueryRowContext(ctx, item.query, time.Now().Add(-24*time.Hour).UnixMilli()).Scan(item.dest)
+		} else {
+			err = s.DB.QueryRowContext(ctx, item.query).Scan(item.dest)
+		}
+		if err != nil {
+			internalError(w, err)
+			return
+		}
+	}
+	notes, err := s.collectAdminNoteStats(ctx)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	var noteCount, annotatedCount, strokeCount int64
+	var noteBytes int64
+	for _, stat := range notes {
+		noteCount += int64(stat.notes)
+		annotatedCount += int64(stat.annotatedNotes)
+		strokeCount += int64(stat.strokes)
+		noteBytes += stat.bytes
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"users": users, "devices": devices, "active_devices_24h": activeDevices,
+		"notes": noteCount, "annotated_notes": annotatedCount, "strokes": strokeCount,
+		"note_storage_bytes": noteBytes, "experiences": experiences,
+		"feedback": feedback, "feedback_new": feedbackNew,
+		"generated_at": time.Now().UnixMilli(),
+	})
+}
+
+func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	} else if offset > 10_000_000 {
+		offset = 10_000_000
+	}
+	var total int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&total); err != nil {
+		internalError(w, err)
+		return
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT u.id,u.nickname,COALESCE(u.email,''),u.email_verified,u.created_at,
+		(SELECT COUNT(*) FROM devices d WHERE d.user_id=u.id),
+		(SELECT COALESCE(MAX(last_seen),0) FROM devices d WHERE d.user_id=u.id)
+		FROM users u ORDER BY u.created_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	type adminUser struct {
+		ID             string `json:"id"`
+		Nickname       string `json:"nickname"`
+		Email          string `json:"email"`
+		EmailVerified  bool   `json:"email_verified"`
+		CreatedAt      int64  `json:"created_at"`
+		Devices        int    `json:"devices"`
+		LastSeen       int64  `json:"last_seen"`
+		Notes          int    `json:"notes"`
+		AnnotatedNotes int    `json:"annotated_notes"`
+		Strokes        int    `json:"strokes"`
+		NoteBytes      int64  `json:"note_bytes"`
+	}
+	items := make([]adminUser, 0, limit)
+	for rows.Next() {
+		var item adminUser
+		if err := rows.Scan(&item.ID, &item.Nickname, &item.Email, &item.EmailVerified, &item.CreatedAt, &item.Devices, &item.LastSeen); err != nil {
+			rows.Close()
+			internalError(w, err)
+			return
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		internalError(w, err)
+		return
+	}
+	rows.Close()
+	noteStats, err := s.collectAdminNoteStats(ctx)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	for i := range items {
+		if stat, ok := noteStats[items[i].ID]; ok {
+			items[i].Notes = stat.notes
+			items[i].AnnotatedNotes = stat.annotatedNotes
+			items[i].Strokes = stat.strokes
+			items[i].NoteBytes = stat.bytes
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
 }
 
 func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
@@ -759,6 +997,8 @@ func (s *Server) staticFiles(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
 		path = "index.html"
+	} else if path == "admin" || path == "admin/" {
+		path = "admin.html"
 	}
 	if strings.Contains(path, "..") || strings.HasPrefix(path, ".") {
 		http.NotFound(w, r)

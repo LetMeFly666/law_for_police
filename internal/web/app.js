@@ -23,9 +23,9 @@ function loadState(){
   return s;
 }
 let state=loadState();
-let section='判断题',index=0,mode='study',filter='all',searchText='',selected=new Set(),answerVisible=false,lastResult=null;
+let section='判断题',index=0,mode='quiz',filter='all',searchText='',selected=new Set(),answerVisible=false,lastResult=null,showAnnotations=false,noteEditQID='';
 let cloud={token:localStorage.getItem(TOKEN_KEY)||'',cursor:Number(localStorage.getItem(CURSOR_KEY)||0),shadow:readShadow(),ready:false,checked:false,busy:false,pending:false,timer:0};
-let drawState={qid:'',strokes:[],active:null,tool:'pen',lastSave:0};
+let drawState={qid:'',strokes:[],active:null,tool:'pen',lastSave:0,paperHeight:0};
 let noteTimer=0, shareItems=[];
 function readShadow(){try{return JSON.parse(localStorage.getItem(SHADOW_KEY)||'{}')}catch{return {}}}
 function persistShadow(){localStorage.setItem(SHADOW_KEY,JSON.stringify(cloud.shadow));}
@@ -47,15 +47,15 @@ function questionOptions(q){if(q.type==='判断')return [{key:'√',text:'正确
 function renderAll(){renderSections();renderJump();renderQuestion();renderStats();}
 function renderSections(){const el=$('sectionTabs');el.innerHTML='';for(const s of SECTIONS){const n=BANK.filter(q=>q.section===s).length;const b=document.createElement('button');b.className='section-tab'+(s===section?' active':'');b.innerHTML=`<span>${s}</span><span class="section-count">${n}题</span>`;b.onclick=()=>{section=s;index=0;answerVisible=false;selected.clear();renderAll();};el.appendChild(b);}}
 function renderJump(){const el=$('jumpGrid');el.innerHTML='';const a=list();$('visibleCount').textContent=`${a.length} / ${BANK.filter(q=>q.section===section).length}`;a.forEach((q,i)=>{const b=document.createElement('button');const m=masteryOf(q.id);b.className='jump'+(q===currentQ()?' current':'')+(m.status==='mastered'?' mastered':m.status==='weak'?' weak':m.status==='learning'?' learning':'');b.textContent=q.no;b.title=q.question;b.onclick=()=>{index=i;answerVisible=false;selected.clear();renderQuestion();renderJump();scrollToQuestion();};el.appendChild(b);});}
-function renderStats(){const tested=new Set(state.tests.map(t=>t.qid)).size;const mastered=Object.values(state.mastery).filter(x=>x.status==='mastered').length;const notes=Object.values(state.notes).filter(x=>x&&((x.text&&x.text.trim())||(Array.isArray(x.strokes)&&x.strokes.length))).length;$('statSeen').textContent=tested;$('statMastered').textContent=mastered;$('statNotes').textContent=notes;$('statTests').textContent=state.tests.length;$('favCount').textContent=Object.values(state.favorites).filter(x=>x.saved).length;const pct=Math.round(mastered/BANK.length*100);$('progressPct').textContent=pct+'%';$('progressFill').style.width=pct+'%';$('progressLabel').textContent=`已掌握 ${mastered} / ${BANK.length} 题`;}
+function renderStats(){const tested=new Set(state.tests.map(t=>t.qid)).size;const mastered=Object.values(state.mastery).filter(x=>x.status==='mastered').length;const notes=Object.values(state.notes).filter(x=>x&&((x.text&&x.text.trim())||(Array.isArray(x.strokes)&&x.strokes.some(stroke=>!stroke.deleted)))).length;$('statSeen').textContent=tested;$('statMastered').textContent=mastered;$('statNotes').textContent=notes;$('statTests').textContent=state.tests.length;$('favCount').textContent=Object.values(state.favorites).filter(x=>x.saved).length;const pct=Math.round(mastered/BANK.length*100);$('progressPct').textContent=pct+'%';$('progressFill').style.width=pct+'%';$('progressLabel').textContent=`已掌握 ${mastered} / ${BANK.length} 题`;}
 function renderQuestion(){
   const q=currentQ();selected.clear();lastResult=null;
-  if(!q){$('qTags').innerHTML='';$('qTitle').textContent='当前筛选下没有题目';$('qHelp').textContent='更换筛选条件，或者切换题型。';$('optionsArea').innerHTML='';$('questionActions').innerHTML='';$('answerArea').classList.add('hidden');$('selfCheckArea').innerHTML='';$('questionMemory').innerHTML='';$('crumb').textContent=section+' · 暂无题目';$('qNo').textContent='';$('bottomTitle').textContent='暂无题目';$('bottomSub').textContent='请调整筛选条件';$('prevBtn').disabled=true;$('nextBtn').disabled=true;$('favoriteToggle').textContent='☆ 收藏';return;}
+  if(!q){$('qTags').innerHTML='';$('qTitle').textContent='当前筛选下没有题目';$('qHelp').textContent='更换筛选条件，或者切换题型。';$('optionsArea').innerHTML='';$('questionActions').innerHTML='';$('answerArea').classList.add('hidden');$('selfCheckArea').innerHTML='';$('questionMemory').innerHTML='';$('crumb').textContent=section+' · 暂无题目';$('qNo').textContent='';$('bottomTitle').textContent='暂无题目';$('bottomSub').textContent='请调整筛选条件';$('prevBtn').disabled=true;$('nextBtn').disabled=true;$('favoriteToggle').textContent='☆ 收藏';$('annotationPreview').classList.add('hidden');$('annotationPreview').innerHTML='';return;}
   const items=list();const m=masteryOf(q.id);const statusLabel=m.status==='mastered'?'已掌握':m.status==='learning'?'学习中':m.status==='weak'?'需复习':'未自测';
   $('crumb').textContent=`${q.section} · 第 ${q.no} / ${BANK.filter(x=>x.section===section).length} 题`;
   $('qNo').textContent=`全卷 ${BANK.findIndex(x=>x.id===q.id)+1} / ${BANK.length}`;
   $('qTags').innerHTML=`<span class="tag blue">${q.type}</span><span class="tag">${mode==='study'?'背题模式':'做题模式'}</span><span class="tag ${m.status==='mastered'?'green':m.status==='weak'?'red':m.status==='learning'?'amber':''}">${statusLabel}</span>`;
-  $('qTitle').innerHTML=highlightText(q.question,q.highlights);
+  $('qTitle').innerHTML=highlightText(q.question,(mode==='study'||answerVisible)?q.highlights:null);
   if(['填空','简答','论述'].includes(q.type))$('qHelp').textContent='先在心里回忆关键词，再查看参考答案。无需把完整答案输入网页；查看后按自己的实际掌握情况自评。';
   else if(mode==='study')$('qHelp').textContent=q.type==='判断'?'先判断题干对错，重点留意绝对化措辞和法律关键词。':'先在心里作答，再查看答案和解析。';
   else $('qHelp').textContent='选择你认为正确的选项后提交；系统会自动判定并记录连续答对次数。';
@@ -69,6 +69,7 @@ function renderQuestion(){
   $('prevBtn').disabled=index===0;$('nextBtn').disabled=items.length===0;$('nextBtn').textContent=index>=items.length-1?'当前列表完成':'下一题 →';
   $('favoriteToggle').textContent=isFavorite(q.id)?'★ 已收藏':'☆ 收藏';
   $('sharePanel').classList.add('hidden');$('shareContent').value='';$('shareNickname').textContent=`发布者：${state.profile.nickname}`;
+  renderAnnotationPreview(q);
 }
 function renderAnswer(q){const box=$('answerArea');box.classList.remove('hidden');const h=q.highlights||{};let result='';if(lastResult!==null)result=`<div class="answer-main" style="color:${lastResult?'var(--green)':'var(--red)'}">${lastResult?'✓ 本次作答正确':'✕ 本次作答不正确'}</div>`;let html=`<div class="answer-head"><span>参考答案与解析</span><span class="tag green">标准答案</span></div><div class="answer-content">${result}<div class="answer-main">答案：${highlightText(displayAnswer(q),h)}</div><div class="section-label">解析</div><div>${highlightText(q.explanation,h)}</div>`;if(q.law)html+=`<div class="section-label">法律依据</div><div>${esc(q.law)}</div>`;if(q.caveat)html+=`<div class="section-label">特别提醒</div><div>${highlightText(q.caveat,h)}</div>`;if(h.red?.length||h.green?.length)html+=`<div class="section-label">本题关键词</div><div class="keypoints">${(h.red||[]).map(x=>`<span class="keypoint">易错：${esc(x)}</span>`).join('')}${(h.green||[]).map(x=>`<span class="keypoint good">正确依据：${esc(x)}</span>`).join('')}</div>`;html+='</div>';box.innerHTML=html;}
 function renderSelfCheck(q){const el=$('selfCheckArea');if(!answerVisible){el.innerHTML='';return;}const m=masteryOf(q.id);const count=m.streak||0;const threshold=Number(state.settings.threshold||3);if(mode==='quiz'&&['判断','单选','多选'].includes(q.type)&&lastResult!==null){el.innerHTML=`<div class="self-check"><strong>本次客观题自测已自动记录</strong><p>连续答对 ${count}/${threshold} 次${m.status==='mastered'?'，已达到掌握标准。':''}。答错会将连续正确次数重置。</p><div class="record-info">可以点击“重新作答”再测一次；连续答对达到设置次数后自动标记为已掌握。</div></div>`;return;}el.innerHTML=`<div class="self-check"><strong>自测：你真正掌握了吗？</strong><p>${['填空','简答','论述'].includes(q.type)?'对照参考答案，按关键词和逻辑判断，不要求逐字一致。':'背题模式下请诚实自评；做题模式下客观题已经自动记录。'} 连续答对 ${count}/${threshold} 次${m.status==='mastered'?'，已达到掌握标准。':''}</p><div class="self-buttons"><button class="btn know" id="selfKnow">✓ 我会了</button><button class="btn notknow" id="selfNotKnow">↻ 还不熟</button></div><div class="record-info">连续答对达到设置次数后自动标记为已掌握；答错会重置连续次数。</div></div>`;}
@@ -77,8 +78,8 @@ function applySelfTest(q,correct,source){const old=masteryOf(q.id);const t=now()
 function renderQuestionAfterTest(q,correct){answerVisible=true;lastResult=correct;renderAnswer(q);renderSelfCheck(q);renderMemory(q);const m=masteryOf(q.id);$('qTags').querySelectorAll('.tag')[2].textContent=m.status==='mastered'?'已掌握':m.status==='weak'?'需复习':'学习中';if(mode==='quiz'&&questionOptions(q).length){const keys=q.type==='多选'?q.answer.split(''):[q.answer];document.querySelectorAll('[data-opt]').forEach(b=>{const key=b.dataset.opt;b.disabled=true;if(keys.includes(key))b.classList.add('correct');else if(selected.has(key))b.classList.add('wrong');});$('questionActions').innerHTML='<button class="btn" id="retryAnswer">重新作答</button><span class="small-muted">本次结果已记录</span>';}}
 function submitObjective(){const q=currentQ();if(!q||!selected.size)return;const expected=q.type==='多选'?q.answer.split(''): [q.answer];const got=[...selected];const ok=expected.length===got.length&&expected.every(k=>got.includes(k));answerVisible=true;lastResult=ok;applySelfTest(q,ok,'quiz');}
 function markFavorite(){const q=currentQ();if(!q)return;const t=now();const saved=!isFavorite(q.id);state.favorites[q.id]={saved,updatedAt:t};saveState();$('favoriteToggle').textContent=saved?'★ 已收藏':'☆ 收藏';renderJump();toast(saved?'已加入收藏夹':'已从收藏夹移除');}
-function saveNote(){const q=currentQ();if(!q)return;const old=state.notes[q.id]||{};state.notes[q.id]={...old,text:$('noteText').value,updatedAt:now()};$('noteSaved').textContent='已保存到本机并排队同步';saveState();}
-function openNote(){const q=currentQ();if(!q)return;const note=state.notes[q.id]||{};$('noteQuestion').textContent=`${q.section}第${q.no}题：${q.question}`;$('noteText').value=note.text||'';$('noteSaved').textContent=(note.strokes||[]).length?`已有 ${(note.strokes||[]).length} 笔圈画，自动保存`:'自动保存';openModal('noteModal');setTimeout(()=>$('noteText').focus(),100);}
+function saveNote(){const qid=noteEditQID;if(!qid)return;const old=state.notes[qid]||{strokes:[]};const t=now();state.notes[qid]={...old,text:$('noteText').value,textUpdatedAt:t,updatedAt:Math.max(t,old.updatedAt||0)};$('noteSaved').textContent='已保存到本机，正在同步云端…';saveState();}
+function openNote(){const q=currentQ();if(!q)return;noteEditQID=q.id;const note=state.notes[q.id]||{};$('noteQuestion').textContent=`${q.section}第${q.no}题：${q.question}`;$('noteText').value=note.text||'';$('noteSaved').textContent='停止输入后自动保存';openModal('noteModal');setTimeout(()=>$('noteText').focus(),100);}
 function scrollToQuestion(){const el=$('questionCard');const top=el.getBoundingClientRect().top+window.scrollY-12;window.scrollTo({top,behavior:'smooth'});}
 function navigate(delta){const a=list();if(!a.length)return;const next=index+delta;if(next<0){toast('已经是当前列表的第一题');return;}if(next>=a.length){toast('当前列表已完成');return;}const y=window.scrollY;index=next;answerVisible=false;selected.clear();renderQuestion();renderJump();requestAnimationFrame(()=>{window.scrollTo({top:y,behavior:'instant'});});}
 function setQuestionById(id){const q=BANK.find(x=>x.id===id);if(!q)return;section=q.section;filter='all';$('listFilter').value='all';$('statusFilters').querySelectorAll('.chip').forEach(x=>x.classList.toggle('active',x.dataset.status==='all'));index=list().findIndex(x=>x.id===id);answerVisible=false;renderAll();closeModal('favoritesModal');closeModal('mySharesModal');scrollToQuestion();}
@@ -109,18 +110,87 @@ async function ensureAnonymous(){
       toast('已使用本机保存的永久连接码恢复账号');
     }catch(e){
       if(e.status!==401)throw e;
-      if(data.recovery_code)setTimeout(()=>showFirstRecoveryCode(data.recovery_code),300);
+      // The account is silent by default; users can reveal their recovery code in 多设备同步.
     }
-  }else if(data.recovery_code){
-    setTimeout(()=>showFirstRecoveryCode(data.recovery_code),300);
   }
   localStorage.setItem(STORE_KEY,JSON.stringify(state));
   return true;
 }
-function flattenState(){const out=[];out.push({key:'test-clear',value:{at:state.testClearAt||0},updated_at:state.testClearAt||1});out.push({key:'profile',value:state.profile,updated_at:state.profile.updatedAt||1});out.push({key:'settings',value:state.settings,updated_at:state.settings.updatedAt||1});for(const [id,v] of Object.entries(state.notes))out.push({key:`note:${id}`,value:v,updated_at:v.updatedAt||1});for(const [id,v] of Object.entries(state.favorites))out.push({key:`favorite:${id}`,value:v,updated_at:v.updatedAt||1});for(const [id,v] of Object.entries(state.mastery))out.push({key:`mastery:${id}`,value:v,updated_at:v.updatedAt||1});for(const t of state.tests)out.push({key:`test:${t.id}`,value:t,updated_at:t.at||1});return out;}
-function applyRemote(change){const {key,value,updated_at}=change;cloud.shadow[key]={updated_at,value};if(key==='test-clear'){state.testClearAt=Math.max(state.testClearAt||0,value?.at||updated_at);state.tests=state.tests.filter(t=>(t.at||0)>state.testClearAt);return;}const newer=(old,stamp)=>!old||(old.updatedAt||old.at||0)<=stamp;let m;if(key==='profile'){if(newer(state.profile,updated_at))state.profile=value;}else if(key==='settings'){if(newer(state.settings,updated_at))state.settings=value;}else if(key.startsWith('note:')){const id=key.slice(5);if(newer(state.notes[id],updated_at))state.notes[id]=value;}else if(key.startsWith('favorite:')){const id=key.slice(9);if(newer(state.favorites[id],updated_at))state.favorites[id]=value;}else if(key.startsWith('mastery:')){const id=key.slice(8);if(newer(state.mastery[id],updated_at))state.mastery[id]=value;}else if(key.startsWith('test:')){const t=value;if((t.at||0)>(state.testClearAt||0)&&!state.tests.some(x=>x.id===t.id))state.tests.push(t);}}
+function flattenState(){
+  const out=[];
+  out.push({key:'test-clear',value:{at:state.testClearAt||0},updated_at:state.testClearAt||1});
+  out.push({key:'profile',value:state.profile,updated_at:state.profile.updatedAt||1});
+  out.push({key:'settings',value:state.settings,updated_at:state.settings.updatedAt||1});
+  for(const [id,v] of Object.entries(state.notes)){
+    const legacyTimestamps=v.textUpdatedAt===undefined&&v.strokesUpdatedAt===undefined;
+    out.push({key:`note-text:${id}`,value:v.text||'',updated_at:v.textUpdatedAt||(legacyTimestamps?v.updatedAt:1)||1});
+    out.push({key:`note-strokes:${id}`,value:{strokes:Array.isArray(v.strokes)?v.strokes:[],paperVersion:v.paperVersion||1,paperWidth:v.paperWidth||DRAW_WIDTH,paperHeight:v.paperHeight||0},updated_at:v.strokesUpdatedAt||(legacyTimestamps?v.updatedAt:1)||1});
+  }
+  for(const [id,v] of Object.entries(state.favorites))out.push({key:`favorite:${id}`,value:v,updated_at:v.updatedAt||1});
+  for(const [id,v] of Object.entries(state.mastery))out.push({key:`mastery:${id}`,value:v,updated_at:v.updatedAt||1});
+  for(const t of state.tests)out.push({key:`test:${t.id}`,value:t,updated_at:t.at||1});
+  return out;
+}
+function applyRemote(change){
+  const {key,value,updated_at}=change;
+  cloud.shadow[key]={updated_at,value};
+  if(key==='test-clear'){
+    state.testClearAt=Math.max(state.testClearAt||0,value?.at||updated_at);
+    state.tests=state.tests.filter(t=>(t.at||0)>state.testClearAt);return;
+  }
+  const mergeNote=(id,field,content,extra={})=>{
+    const old=state.notes[id]||{text:'',strokes:[]};
+    const stampKey=field==='text'?'textUpdatedAt':'strokesUpdatedAt';
+    const hasSplitTimestamps=old.textUpdatedAt!==undefined||old.strokesUpdatedAt!==undefined;
+    const oldStamp=old[stampKey]||(hasSplitTimestamps?0:(old.updatedAt||0));
+    if(field==='strokes'){
+      const merged=mergeStrokeSets(old.strokes,content);
+      const metadata=oldStamp<=updated_at?extra:{};
+      state.notes[id]={...old,...metadata,strokes:merged,[stampKey]:Math.max(oldStamp,updated_at),updatedAt:Math.max(old.updatedAt||0,updated_at)};
+      return true;
+    }
+    if(oldStamp<=updated_at){
+      state.notes[id]={...old,...extra,[field]:content,[stampKey]:updated_at,updatedAt:Math.max(old.updatedAt||0,updated_at)};
+      return true;
+    }
+    return false;
+  };
+  if(key==='profile'){
+    if(!state.profile||(state.profile.updatedAt||0)<=updated_at)state.profile=value;
+  }else if(key==='settings'){
+    if(!state.settings||(state.settings.updatedAt||0)<=updated_at)state.settings=value;
+  }else if(key.startsWith('note-text:')){
+    mergeNote(key.slice(10),'text',String(value??''));
+  }else if(key.startsWith('note-strokes:')){
+    const payload=Array.isArray(value)?{strokes:value}:value||{};
+    mergeNote(key.slice(13),'strokes',Array.isArray(payload.strokes)?payload.strokes:[],{paperVersion:payload.paperVersion||1,paperWidth:payload.paperWidth||DRAW_WIDTH,paperHeight:Number(payload.paperHeight)||0});
+  }else if(key.startsWith('note:')){
+    // Migrate composite notes from earlier releases without replacing newer
+    // text or strokes received from the independent fields above.
+    const id=key.slice(5),legacy=value||{};
+    if(Object.prototype.hasOwnProperty.call(legacy,'text'))mergeNote(id,'text',String(legacy.text||''));
+    if(Array.isArray(legacy.strokes))mergeNote(id,'strokes',legacy.strokes,{paperVersion:legacy.paperVersion||1,paperWidth:legacy.paperWidth||DRAW_WIDTH,paperHeight:legacy.paperHeight||0});
+  }else if(key.startsWith('favorite:')){
+    const id=key.slice(9),old=state.favorites[id];if(!old||(old.updatedAt||0)<=updated_at)state.favorites[id]=value;
+  }else if(key.startsWith('mastery:')){
+    const id=key.slice(8),old=state.mastery[id];if(!old||(old.updatedAt||0)<=updated_at)state.mastery[id]=value;
+  }else if(key.startsWith('test:')){
+    const t=value;if((t.at||0)>(state.testClearAt||0)&&!state.tests.some(x=>x.id===t.id))state.tests.push(t);
+  }
+}
 function stable(v){return JSON.stringify(v);}
-async function syncNow(){if(!navigator.onLine)return;if(cloud.busy){cloud.pending=true;return;}cloud.busy=true;cloud.pending=false;try{await ensureAnonymous();let loops=0;do{const flat=flattenState();const changes=flat.filter(x=>{const old=cloud.shadow[x.key];return !old||old.updated_at!==x.updated_at||stable(old.value)!==stable(x.value);});const res=await api('/api/sync/exchange',{method:'POST',body:{cursor:cloud.cursor,changes}});for(const c of res.changes||[])applyRemote(c);for(const c of res.conflicts||[])applyRemote(c);if(Number.isFinite(res.cursor))cloud.cursor=res.cursor;localStorage.setItem(CURSOR_KEY,String(cloud.cursor));persistShadow();loops++;if(!res.has_more)break;}while(loops<10);localStorage.setItem(STORE_KEY,JSON.stringify(state));renderStats();renderJump();setCloudStatus('online','已连接学习空间 · 自动同步已开启');}catch(e){console.warn('sync failed',e);setCloudStatus('offline','云端暂不可用 · 本地学习记录仍正常保存');}finally{cloud.busy=false;if(cloud.pending){cloud.pending=false;scheduleSync();}}}
+function mergeStrokeSets(a=[],b=[]){
+  const map=new Map();
+  for(const stroke of [...(Array.isArray(a)?a:[]),...(Array.isArray(b)?b:[])]){
+    if(!stroke||typeof stroke!=='object')continue;
+    const key=stroke.id?String(stroke.id):'legacy:'+stable(stroke);
+    const old=map.get(key);
+    if(!old)map.set(key,stroke);
+    else{const merged={...old,...stroke};if(old.deleted||stroke.deleted){merged.deleted=true;merged.deletedAt=Math.max(old.deletedAt||0,stroke.deletedAt||0);}map.set(key,merged);}
+  }
+  return [...map.values()].sort((x,y)=>(x.at||0)-(y.at||0));
+}
+async function syncNow(){if(!navigator.onLine)return;if(cloud.busy){cloud.pending=true;return;}cloud.busy=true;cloud.pending=false;try{await ensureAnonymous();let loops=0;do{const flat=flattenState();const changes=flat.filter(x=>{const old=cloud.shadow[x.key];return !old||old.updated_at!==x.updated_at||stable(old.value)!==stable(x.value);});const res=await api('/api/sync/exchange',{method:'POST',body:{cursor:cloud.cursor,changes}});for(const c of res.changes||[])applyRemote(c);for(const c of res.conflicts||[])applyRemote(c);if(Number.isFinite(res.cursor))cloud.cursor=res.cursor;localStorage.setItem(CURSOR_KEY,String(cloud.cursor));persistShadow();loops++;if(!res.has_more)break;}while(loops<10);localStorage.setItem(STORE_KEY,JSON.stringify(state));renderStats();renderJump();setCloudStatus('online','已连接学习空间 · 自动同步已开启');if(showAnnotations&&currentQ())renderAnnotationPreview(currentQ());}catch(e){console.warn('sync failed',e);setCloudStatus('offline','云端暂不可用 · 本地学习记录仍正常保存');}finally{cloud.busy=false;if(cloud.pending){cloud.pending=false;scheduleSync();}}}
 function scheduleSync(){if(!cloud.token&& !navigator.onLine)return;clearTimeout(cloud.timer);cloud.timer=setTimeout(syncNow,60);}
 async function initializeCloud(){try{const h=await fetch('/api/health',{cache:'no-store'});if(!h.ok)throw new Error('API unavailable');await ensureAnonymous();await syncNow();}catch(e){console.warn('cloud init failed',e);setCloudStatus('offline','云端暂不可用 · 本地记录会暂存，恢复网络后自动上传');}}
 function showFirstRecoveryCode(code){if(!$('recoveryModal')||!code)return;$('firstRecoveryCode').textContent=code;openModal('recoveryModal');}
@@ -139,20 +209,89 @@ function saveProfile(){const nickname=$('nicknameInput').value.trim()||randomNic
 async function requestBindEmail(){const email=$('emailInput').value.trim();if(!email){toast('请先填写邮箱地址');return;}try{await ensureAnonymous();await api('/api/email/request',{method:'POST',body:{email}});$('emailBindStatus').textContent='验证码已发送，请查收邮件';toast('验证码已发送');}catch(e){toast('发送失败：'+e.message);}}
 async function verifyBindEmail(){const email=$('emailInput').value.trim(),code=$('emailCodeInput').value.trim();if(!email||!code){toast('请填写邮箱和验证码');return;}try{const d=await api('/api/email/verify',{method:'POST',body:{email,code}});state.profile={...state.profile,email:d.email,updatedAt:now()};saveState();$('emailBindStatus').textContent='已验证绑定，可用于账号找回';toast('邮箱已验证绑定');}catch(e){toast('绑定失败：'+e.message);}}
 function openSync(){openModal('syncModal');$('syncCreatePanel').classList.add('hidden');$('syncJoinPanel').classList.add('hidden');$('deviceCodeInput').value='';if(cloud.token)setCloudStatus('online','账号已连接，学习数据实时保存到服务端');else setCloudStatus('','正在建立账号…');}
-function drawNote(){return state.notes[drawState.qid]||{text:'',strokes:[]};}
-function saveDrawStrokes(){if(!drawState.qid)return;const old=state.notes[drawState.qid]||{};state.notes[drawState.qid]={...old,strokes:drawState.strokes,updatedAt:now()};localStorage.setItem(STORE_KEY,JSON.stringify(state));renderStats();scheduleSync();$('drawSaveStatus').textContent='圈画已保存到本机，正在同步到服务器…';drawState.lastSave=now();}
-function openDrawMode(){const q=currentQ();if(!q)return;const old=state.notes[q.id]||{};drawState={qid:q.id,strokes:JSON.parse(JSON.stringify(old.strokes||[])),active:null,tool:'pen',lastSave:0};let html=`<div class="draw-paper-question">${esc(q.section)} · 第 ${q.no} 题\n${esc(q.question)}</div>`;for(const o of (q.options||[])){html+=`<div class="draw-paper-option">${esc(o.key)}．${esc(o.text)}</div>`;}if(['填空','简答','论述'].includes(q.type))html+='<div class="draw-paper-foot">请在这里圈出题干关键词、标注法条要点或写下自己的记忆提示。</div>';$('drawPaperText').innerHTML=html;$('drawHint').classList.toggle('hidden',!touchDevice||localStorage.getItem(DRAW_TIP_KEY)==='1');if(touchDevice&&localStorage.getItem(DRAW_TIP_KEY)!=='1')localStorage.setItem(DRAW_TIP_KEY,'1');document.querySelectorAll('[data-draw-tool]').forEach(b=>b.classList.toggle('active',b.dataset.drawTool==='pen'));$('drawSaveStatus').textContent=`已加载 ${drawState.strokes.length} 笔圈画`;$('drawModal').classList.add('show');requestAnimationFrame(()=>{resizeDrawCanvas();});}
-function closeDrawMode(){if(drawState.active)finishStroke();saveDrawStrokes();$('drawModal').classList.remove('show');}
-function resizeDrawCanvas(){const canvas=$('drawCanvas'),paper=$('drawPaper');if(!canvas||!paper)return;const rect=paper.getBoundingClientRect(),dpr=Math.max(1,Math.min(3,window.devicePixelRatio||1));canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr);const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);redrawCanvas();}
-function drawOneStroke(ctx,stroke,w,h){const pts=stroke.points||[];if(!pts.length)return;ctx.save();ctx.lineCap='round';ctx.lineJoin='round';ctx.globalCompositeOperation=stroke.tool==='eraser'?'destination-out':'source-over';ctx.strokeStyle=stroke.color||'#e53935';ctx.fillStyle=stroke.color||'#e53935';ctx.globalAlpha=stroke.tool==='highlighter'?0.28:1;ctx.lineWidth=stroke.width||3;if(pts.length===1){ctx.beginPath();ctx.arc(pts[0].x*w,pts[0].y*h,(stroke.width||3)/2,0,Math.PI*2);ctx.fill();}else{ctx.beginPath();ctx.moveTo(pts[0].x*w,pts[0].y*h);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i].x*w,pts[i].y*h);ctx.stroke();}ctx.restore();}
-function redrawCanvas(){const canvas=$('drawCanvas');if(!canvas)return;const rect=canvas.getBoundingClientRect(),dpr=canvas.width/(rect.width||1),ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,rect.width,rect.height);for(const s of drawState.strokes)drawOneStroke(ctx,s,rect.width,rect.height);if(drawState.active)drawOneStroke(ctx,drawState.active,rect.width,rect.height);}
+const DRAW_WIDTH=700;
+function paperLines(value,maxChars=29){
+  const lines=[];for(const raw of String(value??'').split('\n')){const chars=Array.from(raw);if(!chars.length){lines.push('');continue;}for(let i=0;i<chars.length;i+=maxChars)lines.push(chars.slice(i,i+maxChars).join(''));}return lines;
+}
+function paperBlock(value,cls){return `<div class="${cls}">${paperLines(value).map(line=>`<div class="paper-line">${line?esc(line):'&nbsp;'}</div>`).join('')}</div>`;}
+function paperContentHTML(q){
+  let html=paperBlock(`${q.section} · 第 ${q.no} 题\n${q.question}`,'draw-paper-question');
+  for(const o of (q.options||[]))html+=paperBlock(`${o.key}．${o.text}`,'draw-paper-option');
+  if(['填空','简答','论述'].includes(q.type))html+='<div class="draw-paper-foot">在这里圈出题干关键词、标注法条要点或写下自己的记忆提示。</div>';
+  return html;
+}
+function paperHTML(prefix,q){
+  return `<div class="paper-stage" id="${prefix}Stage"><div class="paper-scaler" id="${prefix}Scaler"><div class="draw-paper" id="${prefix}Paper"><div class="draw-paper-content" id="${prefix}Text">${paperContentHTML(q)}</div><canvas id="${prefix}Canvas"></canvas></div></div></div>`;
+}
+function renderAnnotationPreview(q){
+  const box=$('annotationPreview');if(!box)return;
+  const note=state.notes[q.id]||{};const strokes=Array.isArray(note.strokes)?note.strokes:[];const activeStrokes=strokes.filter(stroke=>!stroke.deleted).length;
+  box.classList.toggle('hidden',!showAnnotations);
+  $('toggleAnnotations').textContent=showAnnotations?'隐藏批注':'显示批注';
+  $('toggleAnnotations').classList.toggle('active',showAnnotations);
+  if(!showAnnotations){box.innerHTML='';return;}
+  box.innerHTML=`<div class="annotation-preview-head"><strong>本题批注纸面</strong><span>${activeStrokes?`${activeStrokes} 笔`:'暂无圈画'} · 切换题目会自动显示对应批注</span></div>${paperHTML('preview',q)}${!activeStrokes?'<p class="small-muted annotation-empty">本题还没有圈画，点击“圈画”即可添加。</p>':''}`;
+  requestAnimationFrame(()=>resizePaperCanvas('preview',strokes,note.paperHeight||0));
+}
+function resizePaperCanvas(prefix,strokes,storedHeight=0){
+  const stage=$(prefix+'Stage'),scaler=$(prefix+'Scaler'),paper=$(prefix+'Paper'),textEl=$(prefix+'Text'),canvas=$(prefix+'Canvas');
+  if(!stage||!scaler||!paper||!textEl||!canvas)return;
+  const height=Math.max(650,Math.ceil(textEl.scrollHeight),Number(storedHeight)||0);
+  if(prefix==='draw')drawState.paperHeight=height;
+  paper.style.height=height+'px';
+  const dpr=Math.max(1,Math.min(3,window.devicePixelRatio||1));
+  canvas.width=Math.round(DRAW_WIDTH*dpr);canvas.height=Math.round(height*dpr);
+  canvas.style.width=DRAW_WIDTH+'px';canvas.style.height=height+'px';
+  const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,DRAW_WIDTH,height);
+  for(const stroke of (strokes||[]))drawOneStroke(ctx,stroke,DRAW_WIDTH,height);
+  if(prefix==='draw'&&drawState.active)drawOneStroke(ctx,drawState.active,DRAW_WIDTH,height);
+  const parent=stage.parentElement;const available=Math.max(260,parent.clientWidth-24);const scale=Math.min(1,available/DRAW_WIDTH);
+  stage.style.width=(DRAW_WIDTH*scale)+'px';stage.style.height=(height*scale)+'px';
+  scaler.style.transform=`scale(${scale})`;
+}
+function redrawCanvas(){resizePaperCanvas('draw',drawState.strokes,drawState.paperHeight);}
 function pointerPoint(e){const rect=$('drawCanvas').getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width)),y:Math.max(0,Math.min(1,(e.clientY-rect.top)/rect.height))};}
+function saveDrawStrokes(){
+  if(!drawState.qid)return;
+  const old=state.notes[drawState.qid]||{text:''};const t=now();
+  state.notes[drawState.qid]={...old,strokes:drawState.strokes,strokesUpdatedAt:t,paperVersion:2,paperWidth:DRAW_WIDTH,paperHeight:drawState.paperHeight||old.paperHeight||0,updatedAt:Math.max(t,old.updatedAt||0)};
+  try{localStorage.setItem(STORE_KEY,JSON.stringify(state));}catch{toast('本地存储空间不足，圈画可能无法暂存');}
+  renderStats();scheduleSync();$('drawSaveStatus').textContent='已保存到本机，正在同步云端…';drawState.lastSave=t;
+  const q=BANK.find(x=>x.id===drawState.qid);if(q&&showAnnotations)renderAnnotationPreview(q);
+}
+function openDrawMode(){
+  const q=currentQ();if(!q)return;const old=state.notes[q.id]||{};
+  drawState={qid:q.id,strokes:JSON.parse(JSON.stringify(old.strokes||[])),active:null,tool:'pen',lastSave:0,paperHeight:Number(old.paperHeight)||0};
+  $('drawPaperText').innerHTML=paperContentHTML(q);
+  $('drawHint').classList.toggle('hidden',!touchDevice||localStorage.getItem(DRAW_TIP_KEY)==='1');
+  if(touchDevice&&localStorage.getItem(DRAW_TIP_KEY)!=='1')localStorage.setItem(DRAW_TIP_KEY,'1');
+  document.querySelectorAll('[data-draw-tool]').forEach(b=>b.classList.toggle('active',b.dataset.drawTool==='pen'));
+  $('drawSaveStatus').textContent=`已加载 ${drawState.strokes.filter(stroke=>!stroke.deleted).length} 笔圈画`;
+  $('drawModal').classList.add('show');requestAnimationFrame(()=>resizePaperCanvas('draw',drawState.strokes,drawState.paperHeight));
+}
+function closeDrawMode(){if(drawState.active)finishStroke();$('drawModal').classList.remove('show');}
+function drawOneStroke(ctx,stroke,w,h){
+  const pts=stroke.points||[];if(stroke.deleted||!pts.length)return;ctx.save();ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.globalCompositeOperation=stroke.tool==='eraser'?'destination-out':'source-over';
+  ctx.strokeStyle=stroke.color||'#e53935';ctx.fillStyle=stroke.color||'#e53935';
+  ctx.globalAlpha=stroke.tool==='highlighter'?0.28:1;ctx.lineWidth=stroke.width||3;
+  if(pts.length===1){ctx.beginPath();ctx.arc(pts[0].x*w,pts[0].y*h,(stroke.width||3)/2,0,Math.PI*2);ctx.fill();}
+  else{ctx.beginPath();ctx.moveTo(pts[0].x*w,pts[0].y*h);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i].x*w,pts[i].y*h);ctx.stroke();}ctx.restore();
+}
 function beginStroke(e){if(!$('drawModal').classList.contains('show'))return;e.preventDefault();const p=pointerPoint(e),tool=drawState.tool;drawState.active={tool,color:tool==='highlighter'?'#f5c542':tool==='eraser'?'#000':'#e53935',width:tool==='highlighter'?15:tool==='eraser'?24:3,points:[p]};$('drawCanvas').setPointerCapture?.(e.pointerId);redrawCanvas();}
-function moveStroke(e){if(!drawState.active)return;e.preventDefault();const p=pointerPoint(e),pts=drawState.active.points,last=pts[pts.length-1];if(Math.hypot(p.x-last.x,p.y-last.y)<0.001)return;pts.push(p);redrawCanvas();if(now()-drawState.lastSave>1800){const old=drawState.strokes;drawState.strokes=[...old,JSON.parse(JSON.stringify(drawState.active))];saveDrawStrokes();drawState.strokes=old;}}
-function finishStroke(){if(!drawState.active)return;drawState.strokes.push(drawState.active);drawState.active=null;redrawCanvas();saveDrawStrokes();}
-function bindDraw(){const canvas=$('drawCanvas');canvas.addEventListener('pointerdown',beginStroke);canvas.addEventListener('pointermove',moveStroke);canvas.addEventListener('pointerup',finishStroke);canvas.addEventListener('pointercancel',finishStroke);window.addEventListener('resize',()=>{if($('drawModal').classList.contains('show'))resizeDrawCanvas();});document.querySelectorAll('[data-draw-tool]').forEach(b=>b.onclick=()=>{drawState.tool=b.dataset.drawTool;document.querySelectorAll('[data-draw-tool]').forEach(x=>x.classList.toggle('active',x===b));});$('undoStroke').onclick=()=>{drawState.strokes.pop();redrawCanvas();saveDrawStrokes();};$('clearStrokes').onclick=()=>{if(confirm('确定清空本题全部圈画？')){drawState.strokes=[];redrawCanvas();saveDrawStrokes();}};$('exitDrawMode').onclick=closeDrawMode;$('openDraw').onclick=openDrawMode;}
+function moveStroke(e){if(!drawState.active)return;e.preventDefault();const p=pointerPoint(e),pts=drawState.active.points,last=pts[pts.length-1];if(Math.hypot(p.x-last.x,p.y-last.y)<0.001)return;pts.push(p);redrawCanvas();}
+function finishStroke(){if(!drawState.active)return;drawState.active.id=uid();drawState.active.at=now();drawState.strokes.push(drawState.active);drawState.active=null;redrawCanvas();saveDrawStrokes();}
+function bindDraw(){
+  const canvas=$('drawCanvas');canvas.addEventListener('pointerdown',beginStroke);canvas.addEventListener('pointermove',moveStroke);canvas.addEventListener('pointerup',finishStroke);canvas.addEventListener('pointercancel',finishStroke);
+  window.addEventListener('resize',()=>{if($('drawModal').classList.contains('show'))resizePaperCanvas('draw',drawState.strokes,drawState.paperHeight);const q=currentQ();if(showAnnotations&&q)renderAnnotationPreview(q);});
+  document.querySelectorAll('[data-draw-tool]').forEach(b=>b.onclick=()=>{drawState.tool=b.dataset.drawTool;document.querySelectorAll('[data-draw-tool]').forEach(x=>x.classList.toggle('active',x===b));});
+  $('undoStroke').onclick=()=>{const last=[...drawState.strokes].reverse().find(stroke=>!stroke.deleted);if(last){last.deleted=true;last.deletedAt=now();redrawCanvas();saveDrawStrokes();}};
+  $('clearStrokes').onclick=()=>{if(confirm('确定清空本题全部圈画？')){const t=now();for(const stroke of drawState.strokes)if(!stroke.deleted){stroke.deleted=true;stroke.deletedAt=t;}redrawCanvas();saveDrawStrokes();}};
+  $('exitDrawMode').onclick=closeDrawMode;$('openDraw').onclick=openDrawMode;$('openDrawQuick').onclick=openDrawMode;
+  $('toggleAnnotations').onclick=()=>{showAnnotations=!showAnnotations;const q=currentQ();if(q)renderAnnotationPreview(q);};
+}
 function showAndBindRecovery(){
-  $('copyFirstRecoveryCode').onclick=async()=>{try{await navigator.clipboard.writeText($('firstRecoveryCode').textContent);toast('已复制永久连接码，请妥善保存');}catch{toast('请手动选中连接码复制');}};
+  $('copyFirstRecoveryCode').onclick=async()=>{try{await navigator.clipboard.writeText($('firstRecoveryCode').textContent);toast('已复制新的永久连接码');}catch{toast('请手动选中连接码复制');}};
   $('closeRecoveryModal').onclick=()=>closeModal('recoveryModal');
   $('syncCreateChoice').onclick=createPairCode;$('newDeviceCode').onclick=rotateRecoveryCode;
   $('copyDeviceCode').onclick=async()=>{try{await navigator.clipboard.writeText($('deviceCode').textContent);toast('已复制永久连接码');}catch{toast('请手动选中连接码并复制');}};
@@ -161,8 +300,8 @@ function showAndBindRecovery(){
   $('requestEmailCode').onclick=requestBindEmail;$('verifyEmail').onclick=verifyBindEmail;
 }
 function bind(){
- $('studyMode').onclick=()=>{mode='study';$('studyMode').classList.add('active');$('quizMode').classList.remove('active');$('modeDescription').textContent='先回忆，再查看参考答案、法律依据和助记。';answerVisible=false;renderQuestion();};
- $('quizMode').onclick=()=>{mode='quiz';$('quizMode').classList.add('active');$('studyMode').classList.remove('active');$('modeDescription').textContent='客观题选择后自动判分；填空、简答、论述题查看答案后自评。';answerVisible=false;renderQuestion();};
+ $('studyMode').onclick=()=>{mode='study';$('studyMode').classList.add('active');$('quizMode').classList.remove('active');$('modeDescription').textContent='背题模式：选项不参与判分，展开答案后查看解析和记忆提示。';answerVisible=false;renderQuestion();};
+ $('quizMode').onclick=()=>{mode='quiz';$('quizMode').classList.add('active');$('studyMode').classList.remove('active');$('modeDescription').textContent='做题模式（默认）：选择选项后提交，系统自动判分并记录。';answerVisible=false;renderQuestion();};
  $('prevBtn').onclick=()=>navigate(-1);$('nextBtn').onclick=()=>navigate(1);
  $('randomBtn').onclick=()=>{const a=list();if(!a.length)return;const y=window.scrollY;index=Math.floor(Math.random()*a.length);answerVisible=false;renderQuestion();renderJump();requestAnimationFrame(()=>window.scrollTo({top:y,behavior:'instant'}));};
  $('questionActions').addEventListener('click',e=>{if(e.target.id==='revealAnswer'){answerVisible=true;lastResult=null;renderQuestion();}if(e.target.id==='submitAnswer')submitObjective();if(e.target.id==='retryAnswer'){answerVisible=false;lastResult=null;selected.clear();renderQuestion();}});
@@ -174,7 +313,7 @@ function bind(){
  $('syncOpen').onclick=openSync;
  $('profileOpen').onclick=profileOpen;$('saveProfile').onclick=saveProfile;$('favoritesOpen').onclick=renderFavoritesAndOpen;$('historyOpen').onclick=()=>{renderHistory();openModal('historyModal');};$('clearHistory').onclick=()=>{if(confirm('确定清空自测历史？掌握状态、笔记和收藏不会被删除。')){state.tests=[];state.testClearAt=now();saveState();renderHistory();toast('自测历史已清空');}};
  $('mySharesOpen').onclick=showMyShares;$('feedbackOpen').onclick=()=>openModal('feedbackModal');$('sendFeedback').onclick=submitFeedback;
- document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close){if(close.dataset.close==='noteModal'){clearTimeout(noteTimer);saveNote();}if(close.dataset.close==='drawModal')closeDrawMode();closeModal(close.dataset.close);}const open=e.target.closest('[data-open-q]');if(open)setQuestionById(open.dataset.openQ);const unfav=e.target.closest('[data-unfav]');if(unfav){const id=unfav.dataset.unfav;state.favorites[id]={saved:false,updatedAt:now()};saveState();renderFavorites();renderJump();toast('已从收藏夹移除');}});
+ document.addEventListener('click',e=>{const close=e.target.closest('[data-close]');if(close){if(close.dataset.close==='noteModal'){clearTimeout(noteTimer);saveNote();noteEditQID='';}if(close.dataset.close==='drawModal')closeDrawMode();closeModal(close.dataset.close);}const open=e.target.closest('[data-open-q]');if(open)setQuestionById(open.dataset.openQ);const unfav=e.target.closest('[data-unfav]');if(unfav){const id=unfav.dataset.unfav;state.favorites[id]={saved:false,updatedAt:now()};saveState();renderFavorites();renderJump();toast('已从收藏夹移除');}});
  document.querySelectorAll('.modal-backdrop').forEach(m=>m.addEventListener('click',e=>{if(e.target===m){if(m.id==='drawModal')closeDrawMode();else closeModal(m.id);}}));
  document.addEventListener('keydown',e=>{if(e.target.matches('textarea,input,select'))return;if($('drawModal').classList.contains('show')){if(e.key==='Escape')closeDrawMode();return;}if(document.querySelector('.modal-backdrop.show'))return;if(e.key==='ArrowRight')navigate(1);if(e.key==='ArrowLeft')navigate(-1);if(e.key==='Escape')document.querySelectorAll('.modal-backdrop.show').forEach(m=>closeModal(m.id));});
 }
