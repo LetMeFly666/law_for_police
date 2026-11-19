@@ -57,9 +57,25 @@ func TestEmbeddedHomeContainsStudyAndRecoveryUI(t *testing.T) {
 		t.Fatalf("GET / status = %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"const BANK =", "圈画批注", "永久设备连接码", "显示批注", "做题模式（默认）"} {
+	for _, want := range []string{"const BANK =", `src="/app.js"`, "永久设备连接码", "做题模式（默认）", "logoFullscreenToggle", "studyTime"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("embedded home page missing %q", want)
+		}
+	}
+}
+
+func TestEmbeddedAppScriptContainsDrawingAndStudyFeatures(t *testing.T) {
+	s := NewServer(nil, Config{})
+	r := httptest.NewRequest("GET", "/app.js", nil)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("GET /app.js status = %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"本题圈画笔记", "红笔", "荧光笔", "撤销一笔", "清空圈画", "study-time", "showAllMyShares"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("embedded app script missing %q", want)
 		}
 	}
 }
@@ -89,5 +105,27 @@ func TestAdminAPIRequiresToken(t *testing.T) {
 		if w.Code != 403 {
 			t.Errorf("GET %s without token status = %d, want 403", path, w.Code)
 		}
+	}
+}
+
+func TestExperienceID(t *testing.T) {
+	if got := experienceID("/api/experiences/abc-123"); got != "abc-123" {
+		t.Fatalf("experienceID() = %q", got)
+	}
+	if got := experienceID("/api/experiences/abc-123/likes"); got != "" {
+		t.Fatalf("nested experience path should be rejected, got %q", got)
+	}
+}
+
+func TestPageArgsBounds(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/experiences?limit=1000&offset=-1", nil)
+	limit, offset := pageArgs(r)
+	if limit != 10 || offset != 0 {
+		t.Fatalf("pageArgs() = (%d,%d), want (10,0)", limit, offset)
+	}
+	r = httptest.NewRequest("GET", "/api/experiences?limit=50&offset=2000000", nil)
+	limit, offset = pageArgs(r)
+	if limit != 50 || offset != 1000000 {
+		t.Fatalf("pageArgs() = (%d,%d), want (50,1000000)", limit, offset)
 	}
 }

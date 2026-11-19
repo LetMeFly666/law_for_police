@@ -79,14 +79,21 @@ func (s *Server) routes() {
 	s.Mux.Handle("POST /api/email/verify", s.requireAuth(http.HandlerFunc(s.verifyBindEmail)))
 	s.Mux.Handle("POST /api/recovery/email/request", http.HandlerFunc(s.requestEmailRecovery))
 	s.Mux.Handle("POST /api/recovery/email/verify", s.requireAuth(http.HandlerFunc(s.verifyEmailRecovery)))
-	s.Mux.HandleFunc("GET /api/experiences", s.listExperiences)
+	s.Mux.Handle("GET /api/experiences", s.optionalAuth(http.HandlerFunc(s.listExperiences)))
 	s.Mux.Handle("GET /api/experiences/mine", s.requireAuth(http.HandlerFunc(s.myExperiences)))
 	s.Mux.Handle("POST /api/experiences", s.requireAuth(http.HandlerFunc(s.createExperience)))
+	s.Mux.Handle("PATCH /api/experiences/", s.requireAuth(http.HandlerFunc(s.updateExperience)))
+	s.Mux.Handle("DELETE /api/experiences/", s.requireAuth(http.HandlerFunc(s.deleteExperience)))
+	s.Mux.Handle("POST /api/experiences/", s.requireAuth(http.HandlerFunc(s.toggleExperienceLike)))
+	s.Mux.Handle("GET /api/experiences/", s.optionalAuth(http.HandlerFunc(s.experienceLikes)))
+	s.Mux.Handle("GET /api/study-time", s.requireAuth(http.HandlerFunc(s.getStudyTime)))
+	s.Mux.Handle("POST /api/study-time", s.requireAuth(http.HandlerFunc(s.addStudyTime)))
 	s.Mux.Handle("POST /api/feedback", s.optionalAuth(http.HandlerFunc(s.createFeedback)))
 	s.Mux.HandleFunc("GET /api/admin/overview", s.admin(s.adminOverview))
 	s.Mux.HandleFunc("GET /api/admin/users", s.admin(s.adminUsers))
 	s.Mux.HandleFunc("GET /api/admin/feedback", s.admin(s.listFeedback))
 	s.Mux.HandleFunc("PATCH /api/admin/feedback/", s.admin(s.updateFeedback))
+	s.Mux.HandleFunc("PATCH /api/admin/users/", s.admin(s.updateAdminUser))
 	s.Mux.HandleFunc("/", s.staticFiles)
 }
 
@@ -413,50 +420,100 @@ func validItemKey(k string) bool {
 	return false
 }
 
+func pageArgs(r *http.Request) (limit, offset int) {
+	limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 || limit > 100 {
+		limit = 10
+	}
+	offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > 1_000_000 {
+		offset = 1_000_000
+	}
+	return
+}
+
 func (s *Server) listExperiences(w http.ResponseWriter, r *http.Request) {
 	qid := strings.TrimSpace(r.URL.Query().Get("question_id"))
 	if qid == "" || len(qid) > 80 {
 		writeError(w, http.StatusBadRequest, "question_id 无效")
 		return
 	}
-	rows, err := s.DB.QueryContext(r.Context(), `SELECT id,question_id,nickname,content,created_at FROM experiences WHERE question_id=? ORDER BY created_at DESC LIMIT 200`, qid)
+	limit, offset := pageArgs(r)
+	var total int
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM experiences WHERE question_id=?`, qid).Scan(&total); err != nil {
+		internalError(w, err)
+		return
+	}
+	id := getIdentity(r)
+	order := `likes_count DESC,e.created_at DESC`
+	if r.URL.Query().Get("sort") == "new" {
+		order = `e.created_at DESC`
+	}
+	query := `SELECT e.id,e.question_id,COALESCE(NULLIF(u.nickname,''),e.nickname),e.content,e.created_at,e.updated_at,
+		(SELECT COUNT(*) FROM experience_likes l WHERE l.experience_id=e.id) AS likes_count,
+		EXISTS(SELECT 1 FROM experience_likes ml WHERE ml.experience_id=e.id AND ml.user_id=?) AS liked_by_me
+		FROM experiences e JOIN users u ON u.id=e.user_id WHERE e.question_id=? ORDER BY ` + order + ` LIMIT ? OFFSET ?`
+	rows, err := s.DB.QueryContext(r.Context(), query, id.UserID, qid, limit, offset)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
 	defer rows.Close()
-	items := make([]map[string]any, 0)
+	items := make([]map[string]any, 0, limit)
 	for rows.Next() {
-		var id, q, n, c string
-		var at int64
-		if err := rows.Scan(&id, &q, &n, &c, &at); err != nil {
+		var eid, q, nickname, content string
+		var created, updated int64
+		var likes int
+		var liked bool
+		if err := rows.Scan(&eid, &q, &nickname, &content, &created, &updated, &likes, &liked); err != nil {
 			internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"id": id, "question_id": q, "nickname": n, "content": c, "created_at": at})
+		items = append(items, map[string]any{"id": eid, "question_id": q, "nickname": nickname, "content": content, "created_at": created, "updated_at": updated, "likes_count": likes, "liked_by_me": liked})
 	}
-	writeJSON(w, http.StatusOK, items)
+	if err := rows.Err(); err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Server) myExperiences(w http.ResponseWriter, r *http.Request) {
 	id := getIdentity(r)
-	rows, err := s.DB.QueryContext(r.Context(), `SELECT id,question_id,nickname,content,created_at FROM experiences WHERE user_id=? ORDER BY created_at DESC LIMIT 500`, id.UserID)
+	limit, offset := pageArgs(r)
+	var total int
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM experiences WHERE user_id=?`, id.UserID).Scan(&total); err != nil {
+		internalError(w, err)
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT e.id,e.question_id,COALESCE(NULLIF(u.nickname,''),e.nickname),e.content,e.created_at,e.updated_at,
+		(SELECT COUNT(*) FROM experience_likes l WHERE l.experience_id=e.id),EXISTS(SELECT 1 FROM experience_likes ml WHERE ml.experience_id=e.id AND ml.user_id=?)
+		FROM experiences e JOIN users u ON u.id=e.user_id WHERE e.user_id=? ORDER BY e.created_at DESC LIMIT ? OFFSET ?`, id.UserID, id.UserID, limit, offset)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
 	defer rows.Close()
-	items := make([]map[string]any, 0)
+	items := make([]map[string]any, 0, limit)
 	for rows.Next() {
-		var pid, q, n, c string
-		var at int64
-		if err := rows.Scan(&pid, &q, &n, &c, &at); err != nil {
+		var eid, q, n, c string
+		var at, updated int64
+		var likes int
+		var liked bool
+		if err := rows.Scan(&eid, &q, &n, &c, &at, &updated, &likes, &liked); err != nil {
 			internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"id": pid, "question_id": q, "nickname": n, "content": c, "created_at": at})
+		items = append(items, map[string]any{"id": eid, "question_id": q, "nickname": n, "content": c, "created_at": at, "updated_at": updated, "likes_count": likes, "liked_by_me": liked})
 	}
-	writeJSON(w, http.StatusOK, items)
+	if err := rows.Err(); err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Server) createExperience(w http.ResponseWriter, r *http.Request) {
@@ -471,7 +528,7 @@ func (s *Server) createExperience(w http.ResponseWriter, r *http.Request) {
 	req.QuestionID = strings.TrimSpace(req.QuestionID)
 	req.Nickname = cleanText(req.Nickname, 60)
 	req.Content = strings.TrimSpace(req.Content)
-	if req.QuestionID == "" || len(req.QuestionID) > 80 || len([]rune(req.Content)) < 2 || len([]rune(req.Content)) > 2000 {
+	if req.QuestionID == "" || len(req.QuestionID) > 80 || len([]rune(req.Content)) < 1 || len([]rune(req.Content)) > 2000 {
 		writeError(w, http.StatusBadRequest, "心得内容或题目编号无效")
 		return
 	}
@@ -482,11 +539,198 @@ func (s *Server) createExperience(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	at := time.Now().UnixMilli()
-	if _, err = s.DB.ExecContext(r.Context(), `INSERT INTO experiences(id,user_id,question_id,nickname,content,created_at) VALUES(?,?,?,?,?,?)`, pid, id.UserID, req.QuestionID, req.Nickname, req.Content, at); err != nil {
+	if _, err = s.DB.ExecContext(r.Context(), `INSERT INTO experiences(id,user_id,question_id,nickname,content,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, pid, id.UserID, req.QuestionID, req.Nickname, req.Content, at, at); err != nil {
 		internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": pid, "question_id": req.QuestionID, "nickname": req.Nickname, "content": req.Content, "created_at": at})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": pid, "question_id": req.QuestionID, "nickname": req.Nickname, "content": req.Content, "created_at": at, "updated_at": at, "likes_count": 0, "liked_by_me": false})
+}
+
+func experienceID(path string) string {
+	id := strings.TrimPrefix(path, "/api/experiences/")
+	if id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	return id
+}
+func (s *Server) updateExperience(w http.ResponseWriter, r *http.Request) {
+	id := experienceID(r.URL.Path)
+	if id == "" {
+		writeError(w, 400, "心得编号无效")
+		return
+	}
+	var req struct {
+		Content string `json:"content"`
+	}
+	if !decodeJSON(w, r, &req, 8<<10) {
+		return
+	}
+	req.Content = strings.TrimSpace(req.Content)
+	if len([]rune(req.Content)) < 1 || len([]rune(req.Content)) > 2000 {
+		writeError(w, 400, "心得内容长度应为 1—2000 字")
+		return
+	}
+	who := getIdentity(r)
+	res, err := s.DB.ExecContext(r.Context(), `UPDATE experiences SET content=?,updated_at=? WHERE id=? AND user_id=?`, req.Content, time.Now().UnixMilli(), id, who.UserID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeError(w, 404, "心得不存在或无权编辑")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (s *Server) deleteExperience(w http.ResponseWriter, r *http.Request) {
+	id := experienceID(r.URL.Path)
+	if id == "" {
+		writeError(w, 400, "心得编号无效")
+		return
+	}
+	who := getIdentity(r)
+	res, err := s.DB.ExecContext(r.Context(), `DELETE FROM experiences WHERE id=? AND user_id=?`, id, who.UserID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeError(w, 404, "心得不存在或无权删除")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+func (s *Server) toggleExperienceLike(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasSuffix(r.URL.Path, "/like") {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/experiences/"), "/like")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, 400, "心得编号无效")
+		return
+	}
+	who := getIdentity(r)
+	var exists int
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM experiences WHERE id=?`, id).Scan(&exists); err != nil {
+		internalError(w, err)
+		return
+	}
+	if exists == 0 {
+		writeError(w, 404, "心得不存在")
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(), `INSERT IGNORE INTO experience_likes(experience_id,user_id,created_at) VALUES(?,?,?)`, id, who.UserID, time.Now().UnixMilli())
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	inserted, _ := res.RowsAffected()
+	liked := inserted > 0
+	if !liked {
+		if _, err = s.DB.ExecContext(r.Context(), `DELETE FROM experience_likes WHERE experience_id=? AND user_id=?`, id, who.UserID); err != nil {
+			internalError(w, err)
+			return
+		}
+	}
+	var count int
+	if err = s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM experience_likes WHERE experience_id=?`, id).Scan(&count); err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"liked": liked, "likes_count": count})
+}
+func (s *Server) experienceLikes(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/experiences/")
+	if !strings.HasSuffix(path, "/likes") {
+		http.NotFound(w, r)
+		return
+	}
+	id := strings.TrimSuffix(path, "/likes")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, 400, "心得编号无效")
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT COALESCE(NULLIF(u.nickname,''),'匿名同学') FROM experience_likes l JOIN users u ON u.id=l.user_id WHERE l.experience_id=? ORDER BY l.created_at DESC LIMIT 100`, id)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	items := make([]map[string]string, 0)
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			internalError(w, err)
+			return
+		}
+		items = append(items, map[string]string{"nickname": n})
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) getStudyTime(w http.ResponseWriter, r *http.Request) {
+	who := getIdentity(r)
+	var total int64
+	err := s.DB.QueryRowContext(r.Context(), `SELECT total_ms FROM study_time WHERE user_id=?`, who.UserID).Scan(&total)
+	if errors.Is(err, sql.ErrNoRows) {
+		total = 0
+	} else if err != nil {
+		internalError(w, err)
+		return
+	}
+	batchApplied := false
+	if batchID := r.URL.Query().Get("batch_id"); batchID != "" && len(batchID) == 36 {
+		if err := s.DB.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM study_time_batches WHERE user_id=? AND batch_id=?)`, who.UserID, batchID).Scan(&batchApplied); err != nil {
+			internalError(w, err)
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"total_ms": total, "batch_applied": batchApplied})
+}
+func (s *Server) addStudyTime(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DeltaMS int64  `json:"delta_ms"`
+		BatchID string `json:"batch_id"`
+	}
+	if !decodeJSON(w, r, &req, 4096) {
+		return
+	}
+	if req.DeltaMS < 1 || req.DeltaMS > 60000 || len(req.BatchID) != 36 || strings.Count(req.BatchID, "-") != 4 {
+		writeError(w, 400, "学习时长批次数据无效")
+		return
+	}
+	who := getIdentity(r)
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), `INSERT IGNORE INTO study_time_batches(user_id,batch_id,delta_ms,created_at) VALUES(?,?,?,?)`, who.UserID, req.BatchID, req.DeltaMS, time.Now().UnixMilli())
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	inserted, _ := result.RowsAffected()
+	if inserted > 0 {
+		if _, err = tx.ExecContext(r.Context(), `INSERT INTO study_time(user_id,total_ms,updated_at) VALUES(?,?,?) ON DUPLICATE KEY UPDATE total_ms=total_ms+VALUES(total_ms),updated_at=VALUES(updated_at)`, who.UserID, req.DeltaMS, time.Now().UnixMilli()); err != nil {
+			internalError(w, err)
+			return
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		internalError(w, err)
+		return
+	}
+	var total int64
+	if err = s.DB.QueryRowContext(r.Context(), `SELECT total_ms FROM study_time WHERE user_id=?`, who.UserID).Scan(&total); err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"total_ms": total})
 }
 
 func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
@@ -503,8 +747,8 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.TrimSpace(req.Email)
 	req.Category = cleanText(req.Category, 40)
 	req.Content = strings.TrimSpace(req.Content)
-	if len([]rune(req.Content)) < 5 || len([]rune(req.Content)) > 3000 {
-		writeError(w, http.StatusBadRequest, "反馈内容至少 5 个字，最多 3000 字")
+	if len([]rune(req.Content)) < 1 || len([]rune(req.Content)) > 3000 {
+		writeError(w, http.StatusBadRequest, "反馈内容不能为空，最多 3000 字")
 		return
 	}
 	var userID any
@@ -521,7 +765,26 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": pid})
+	mailSent := s.notifyFeedback(req.Nickname, req.Email, req.Category, req.Content, pid)
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": pid, "notification_sent": mailSent})
+}
+
+func (s *Server) notifyFeedback(nickname, email, category, content, id string) bool {
+	if !s.Cfg.SMTPEnabled() {
+		return false
+	}
+	body := fmt.Sprintf("收到新的法律学习本反馈\r\n编号：%s\r\n昵称：%s\r\n联系邮箱：%s\r\n类型：%s\r\n\r\n%s", id, nickname, email, category, content)
+	msg := []byte("To: Tisfy@qq.com\r\nFrom: " + s.Cfg.SMTPFrom + "\r\nSubject: [法律学习本] 新反馈\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body)
+	addr := net.JoinHostPort(s.Cfg.SMTPHost, s.Cfg.SMTPPort)
+	var auth smtp.Auth
+	if s.Cfg.SMTPUser != "" {
+		auth = smtp.PlainAuth("", s.Cfg.SMTPUser, s.Cfg.SMTPPassword, s.Cfg.SMTPHost)
+	}
+	if err := smtp.SendMail(addr, auth, s.Cfg.SMTPFrom, []string{"Tisfy@qq.com"}, msg); err != nil {
+		log.Printf("send feedback notification failed id=%s: %v", id, err)
+		return false
+	}
+	return true
 }
 
 type adminNoteFlags struct {
@@ -643,7 +906,7 @@ func (s *Server) collectAdminNoteStats(ctx context.Context) (map[string]adminNot
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	var users, devices, activeDevices, experiences, feedback, feedbackNew int64
+	var users, devices, activeDevices, experiences, feedback, feedbackNew, studyMillis int64
 	queries := []struct {
 		query string
 		dest  *int64
@@ -654,6 +917,7 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 		{`SELECT COUNT(*) FROM experiences`, &experiences},
 		{`SELECT COUNT(*) FROM feedback`, &feedback},
 		{`SELECT COUNT(*) FROM feedback WHERE status='new'`, &feedbackNew},
+		{`SELECT COALESCE(SUM(total_ms),0) FROM study_time`, &studyMillis},
 	}
 	for i, item := range queries {
 		var err error
@@ -684,7 +948,7 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 		"users": users, "devices": devices, "active_devices_24h": activeDevices,
 		"notes": noteCount, "annotated_notes": annotatedCount, "strokes": strokeCount,
 		"note_storage_bytes": noteBytes, "experiences": experiences,
-		"feedback": feedback, "feedback_new": feedbackNew,
+		"feedback": feedback, "feedback_new": feedbackNew, "study_time_ms": studyMillis,
 		"generated_at": time.Now().UnixMilli(),
 	})
 }
@@ -709,7 +973,8 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT u.id,u.nickname,COALESCE(u.email,''),u.email_verified,u.created_at,
 		(SELECT COUNT(*) FROM devices d WHERE d.user_id=u.id),
-		(SELECT COALESCE(MAX(last_seen),0) FROM devices d WHERE d.user_id=u.id)
+		(SELECT COALESCE(MAX(last_seen),0) FROM devices d WHERE d.user_id=u.id),
+		COALESCE((SELECT total_ms FROM study_time st WHERE st.user_id=u.id),0)
 		FROM users u ORDER BY u.created_at DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		internalError(w, err)
@@ -727,11 +992,12 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 		AnnotatedNotes int    `json:"annotated_notes"`
 		Strokes        int    `json:"strokes"`
 		NoteBytes      int64  `json:"note_bytes"`
+		StudyTimeMS    int64  `json:"study_time_ms"`
 	}
 	items := make([]adminUser, 0, limit)
 	for rows.Next() {
 		var item adminUser
-		if err := rows.Scan(&item.ID, &item.Nickname, &item.Email, &item.EmailVerified, &item.CreatedAt, &item.Devices, &item.LastSeen); err != nil {
+		if err := rows.Scan(&item.ID, &item.Nickname, &item.Email, &item.EmailVerified, &item.CreatedAt, &item.Devices, &item.LastSeen, &item.StudyTimeMS); err != nil {
 			rows.Close()
 			internalError(w, err)
 			return
@@ -758,6 +1024,37 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *Server) updateAdminUser(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
+	const suffix = "/study-time"
+	if !strings.HasSuffix(path, suffix) {
+		http.NotFound(w, r)
+		return
+	}
+	userID := strings.TrimSuffix(path, suffix)
+	if userID == "" || strings.Contains(userID, "/") {
+		writeError(w, 400, "用户编号无效")
+		return
+	}
+	var req struct {
+		TotalMS int64 `json:"total_ms"`
+	}
+	if !decodeJSON(w, r, &req, 4096) {
+		return
+	}
+	if req.TotalMS < 0 || req.TotalMS > 1000*365*24*60*60*1000 {
+		writeError(w, 400, "学习时长数值无效")
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(), `INSERT INTO study_time(user_id,total_ms,updated_at) VALUES(?,?,?) ON DUPLICATE KEY UPDATE total_ms=VALUES(total_ms),updated_at=VALUES(updated_at)`, userID, req.TotalMS, time.Now().UnixMilli())
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	_ = res
+	writeJSON(w, 200, map[string]any{"ok": true, "total_ms": req.TotalMS})
 }
 
 func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {

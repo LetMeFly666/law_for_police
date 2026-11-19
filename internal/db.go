@@ -68,9 +68,34 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			nickname VARCHAR(60) NOT NULL,
 			content TEXT NOT NULL,
 			created_at BIGINT NOT NULL,
+			updated_at BIGINT NOT NULL DEFAULT 0,
 			KEY idx_experiences_question (question_id, created_at),
 			KEY idx_experiences_user (user_id, created_at),
 			CONSTRAINT fk_experiences_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS experience_likes (
+			experience_id CHAR(36) NOT NULL,
+			user_id CHAR(36) NOT NULL,
+			created_at BIGINT NOT NULL,
+			PRIMARY KEY (experience_id,user_id),
+			KEY idx_experience_likes_user (user_id,created_at),
+			CONSTRAINT fk_experience_likes_experience FOREIGN KEY (experience_id) REFERENCES experiences(id) ON DELETE CASCADE,
+			CONSTRAINT fk_experience_likes_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS study_time (
+			user_id CHAR(36) PRIMARY KEY,
+			total_ms BIGINT NOT NULL DEFAULT 0,
+			updated_at BIGINT NOT NULL,
+			CONSTRAINT fk_study_time_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS study_time_batches (
+			user_id CHAR(36) NOT NULL,
+			batch_id CHAR(36) NOT NULL,
+			delta_ms BIGINT NOT NULL,
+			created_at BIGINT NOT NULL,
+			PRIMARY KEY (user_id,batch_id),
+			KEY idx_study_batches_created (created_at),
+			CONSTRAINT fk_study_batches_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS feedback (
 			id CHAR(36) PRIMARY KEY,
@@ -103,6 +128,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	// Keep deployments upgrade-safe if the earlier SQLite/MySQL prototype schema
 	// already exists. The column names and DDL are fixed constants, not user input.
 	for _, column := range []struct{ table, name, ddl string }{
+		{"experiences", "updated_at", "ALTER TABLE experiences ADD COLUMN updated_at BIGINT NOT NULL DEFAULT 0"},
 		{"users", "sync_version", "ALTER TABLE users ADD COLUMN sync_version BIGINT NOT NULL DEFAULT 0"},
 		{"user_items", "sync_version", "ALTER TABLE user_items ADD COLUMN sync_version BIGINT NOT NULL DEFAULT 0"},
 	} {

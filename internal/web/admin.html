@@ -19,7 +19,7 @@
 </head>
 <body>
   <main class="wrap">
-    <header class="head"><div><h1>法律学习本 · 管理后台</h1><div class="muted">用户、设备、笔记与圈画统计；不会展示用户的私人笔记内容。</div></div><a href="/">返回学习页面 →</a></header>
+    <header class="head"><div><h1>法律学习本 · 管理后台</h1><div class="muted">用户、设备、笔记、圈画与学习时长统计；不会展示用户的私人笔记内容。</div></div><a href="/">返回学习页面 →</a></header>
     <section class="panel">
       <div class="auth">
         <div class="field"><label for="adminToken">ADMIN_TOKEN</label><input id="adminToken" type="password" autocomplete="current-password" placeholder="输入服务端配置的 ADMIN_TOKEN"></div>
@@ -34,7 +34,7 @@
     </section>
     <section class="panel">
       <div class="panel-title"><h2>用户列表</h2><span id="userTotal" class="muted"></span></div>
-      <div class="table-wrap"><table><thead><tr><th>昵称 / 用户 ID</th><th>邮箱</th><th>创建时间</th><th>设备数</th><th>最近活跃</th><th>笔记题数</th><th>有圈画的题数</th><th>笔迹数</th><th>笔记数据大小</th></tr></thead><tbody id="users"><tr><td colspan="9" class="empty">尚未加载</td></tr></tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>昵称 / 用户 ID</th><th>邮箱</th><th>创建时间</th><th>设备数</th><th>最近活跃</th><th>笔记题数</th><th>有圈画的题数</th><th>笔迹数</th><th>笔记数据大小</th><th>学习时长</th><th>管理</th></tr></thead><tbody id="users"><tr><td colspan="11" class="empty">尚未加载</td></tr></tbody></table></div>
       <div class="pager"><button class="secondary" id="prev" disabled>上一页</button><span id="page">—</span><button class="secondary" id="next" disabled>下一页</button></div>
     </section>
     <section class="panel">
@@ -49,6 +49,7 @@
   $('adminToken').value=state.token;
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function time(v){return v?new Date(v).toLocaleString():'—';}
+  function duration(v){const m=Math.floor((Number(v)||0)/60000),h=Math.floor(m/60);return h?`${h} 小时 ${m%60} 分钟`:`${m} 分钟`;}
   function bytes(v){if(!v)return '0 B';if(v<1024)return v+' B';if(v<1024*1024)return (v/1024).toFixed(1)+' KB';return (v/1024/1024).toFixed(2)+' MB';}
   function setStatus(s,bad=false){$('status').textContent=s;$('status').classList.toggle('error',bad);}
   async function api(path,options={}){
@@ -57,12 +58,12 @@
     if(!res.ok)throw new Error(data.detail||('请求失败：HTTP '+res.status));return data;
   }
   function renderMetrics(d){
-    const list=[['用户总数',d.users],['设备总数',d.devices],['24 小时活跃设备',d.active_devices_24h],['笔记题数',d.notes],['有圈画的题数',d.annotated_notes],['笔迹总数',d.strokes],['题友心得',d.experiences],['反馈总数',d.feedback],['待处理反馈',d.feedback_new],['笔记数据量',bytes(d.note_storage_bytes)]];
+    const list=[['用户总数',d.users],['设备总数',d.devices],['24 小时活跃设备',d.active_devices_24h],['笔记题数',d.notes],['有圈画的题数',d.annotated_notes],['笔迹总数',d.strokes],['题友心得',d.experiences],['反馈总数',d.feedback],['待处理反馈',d.feedback_new],['笔记数据量',bytes(d.note_storage_bytes)],['累计学习时长',duration(d.study_time_ms)]];
     $('metrics').innerHTML=list.map(([label,value])=>`<div class="metric"><strong>${esc(value)}</strong><span>${label}</span></div>`).join('');$('generated').textContent='统计时间：'+time(d.generated_at);
   }
   function renderUsers(items){
-    if(!items.length){$('users').innerHTML='<tr><td colspan="9" class="empty">没有用户记录</td></tr>';return;}
-    $('users').innerHTML=items.map(u=>`<tr><td><strong>${esc(u.nickname||'未设置昵称')}</strong><div class="id">${esc(u.id)}</div></td><td>${esc(u.email||'—')} ${u.email_verified?'<span class="verified">已验证</span>':''}</td><td>${time(u.created_at)}</td><td>${u.devices}</td><td>${time(u.last_seen)}</td><td>${u.notes}</td><td>${u.annotated_notes}</td><td>${u.strokes}</td><td>${bytes(u.note_bytes)}</td></tr>`).join('');
+    if(!items.length){$('users').innerHTML='<tr><td colspan="11" class="empty">没有用户记录</td></tr>';return;}
+    $('users').innerHTML=items.map(u=>`<tr><td><strong>${esc(u.nickname||'未设置昵称')}</strong><div class="id">${esc(u.id)}</div></td><td>${esc(u.email||'—')} ${u.email_verified?'<span class="verified">已验证</span>':''}</td><td>${time(u.created_at)}</td><td>${u.devices}</td><td>${time(u.last_seen)}</td><td>${u.notes}</td><td>${u.annotated_notes}</td><td>${u.strokes}</td><td>${bytes(u.note_bytes)}</td><td>${duration(u.study_time_ms)}</td><td><button class="secondary" data-study-user="${esc(u.id)}" data-study-ms="${Number(u.study_time_ms)||0}">修改时长</button></td></tr>`).join('');
   }
   async function loadUsers(){
     const d=await api(`/api/admin/users?limit=${state.limit}&offset=${state.offset}`);state.total=d.total;
@@ -79,7 +80,7 @@
     state.token=$('adminToken').value.trim();if(!state.token){setStatus('请先输入 ADMIN_TOKEN。',true);return;}
     $('load').disabled=true;setStatus('正在验证令牌并读取 MySQL 统计…');
     try{sessionStorage.setItem('lawStudyAdminToken',state.token);const [overview]=await Promise.all([api('/api/admin/overview')]);renderMetrics(overview);await Promise.all([loadUsers(),loadFeedback()]);setStatus('验证成功。后台统计已从 MySQL 实时读取。');}
-    catch(e){setStatus(e.message,true);$('metrics').innerHTML='<div class="empty">无法读取数据</div>';$('users').innerHTML='<tr><td colspan="9" class="empty">请检查令牌或服务端日志</td></tr>';}
+    catch(e){setStatus(e.message,true);$('metrics').innerHTML='<div class="empty">无法读取数据</div>';$('users').innerHTML='<tr><td colspan="11" class="empty">请检查令牌或服务端日志</td></tr>';}
     finally{$('load').disabled=false;}
   }
   $('load').onclick=loadAll;
@@ -88,6 +89,7 @@
   $('next').onclick=async()=>{state.offset+=state.limit;try{await loadUsers();}catch(e){setStatus(e.message,true);}};
   $('refreshFeedback').onclick=async()=>{try{await loadFeedback();setStatus('反馈列表已刷新。');}catch(e){setStatus(e.message,true);}};
   $('feedback').addEventListener('click',async e=>{const b=e.target.closest('[data-feedback]');if(!b)return;try{await api('/api/admin/feedback/'+encodeURIComponent(b.dataset.feedback),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:b.dataset.status})});await loadFeedback();setStatus('反馈状态已更新。');}catch(err){setStatus(err.message,true);}});
+  $('users').addEventListener('click',async e=>{const b=e.target.closest('[data-study-user]');if(!b)return;const current=(Number(b.dataset.studyMs)||0)/60000;const value=prompt('设置该用户的累计学习时长（分钟），可填写小数：',String(current.toFixed(1)));if(value===null)return;const minutes=Number(value);if(!Number.isFinite(minutes)||minutes<0){setStatus('学习时长必须是非负数字。',true);return;}try{await api('/api/admin/users/'+encodeURIComponent(b.dataset.studyUser)+'/study-time',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({total_ms:Math.round(minutes*60000)})});await loadUsers();setStatus('学习时长已修改。');}catch(err){setStatus(err.message,true);}});
   if(state.token)loadAll();
 })();
 </script>
