@@ -109,6 +109,15 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			created_at BIGINT NOT NULL,
 			KEY idx_feedback_created (created_at)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+		`CREATE TABLE IF NOT EXISTS email_code_send_attempts (
+			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+			email VARCHAR(254) NOT NULL,
+			purpose VARCHAR(20) NOT NULL,
+			client_ip VARCHAR(64) NOT NULL,
+			created_at BIGINT NOT NULL,
+			KEY idx_email_send_email_time (email, created_at),
+			KEY idx_email_send_ip_time (client_ip, created_at)
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS email_codes (
 			id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
 			email VARCHAR(254) NOT NULL,

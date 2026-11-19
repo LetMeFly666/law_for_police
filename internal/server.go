@@ -94,6 +94,7 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("GET /api/admin/feedback", s.admin(s.listFeedback))
 	s.Mux.HandleFunc("PATCH /api/admin/feedback/", s.admin(s.updateFeedback))
 	s.Mux.HandleFunc("PATCH /api/admin/users/", s.admin(s.updateAdminUser))
+	s.Mux.HandleFunc("POST /api/admin/users/", s.admin(s.adminResetRecoveryCode))
 	s.Mux.HandleFunc("/", s.staticFiles)
 }
 
@@ -1048,6 +1049,42 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
 }
 
+func (s *Server) adminResetRecoveryCode(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
+	const suffix = "/recovery-code"
+	if !strings.HasSuffix(userID, suffix) {
+		http.NotFound(w, r)
+		return
+	}
+	userID = strings.TrimSuffix(userID, suffix)
+	if userID == "" || strings.Contains(userID, "/") {
+		writeError(w, http.StatusBadRequest, "用户编号无效")
+		return
+	}
+	code, err := randomRecoveryCode()
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	encrypted, err := encryptRecoveryCode(s.Cfg.AppSecret, code)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	res, err := s.DB.ExecContext(r.Context(), `UPDATE users SET recovery_hash=?,recovery_code_ciphertext=? WHERE id=?`, hash(code), encrypted, userID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeError(w, http.StatusNotFound, "用户不存在")
+		return
+	}
+	log.Printf("admin reset recovery code user=%s", userID)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "recovery_code": code})
+}
+
 func (s *Server) updateAdminUser(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
 	const suffix = "/study-time"
@@ -1256,10 +1293,19 @@ func (s *Server) issueEmailCode(w http.ResponseWriter, r *http.Request, email, p
 		writeError(w, http.StatusServiceUnavailable, "服务器尚未配置 SMTP 邮件服务")
 		return
 	}
-	var recent int
-	_ = s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM email_codes WHERE email=? AND purpose=? AND created_at>?`, email, purpose, time.Now().Add(-60*time.Second).UnixMilli()).Scan(&recent)
-	if recent > 0 {
-		writeError(w, http.StatusTooManyRequests, "验证码发送过于频繁，请稍后再试")
+	now := time.Now().UnixMilli()
+	ip := requestClientIP(r)
+	_, _ = s.DB.ExecContext(r.Context(), `DELETE FROM email_code_send_attempts WHERE created_at<?`, now-24*60*60*1000)
+	var recent, hourlyEmail, hourlyIP int
+	_ = s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM email_code_send_attempts WHERE email=? AND purpose=? AND created_at>?`, email, purpose, now-60*1000).Scan(&recent)
+	_ = s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM email_code_send_attempts WHERE email=? AND created_at>?`, email, now-60*60*1000).Scan(&hourlyEmail)
+	_ = s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM email_code_send_attempts WHERE client_ip=? AND created_at>?`, ip, now-60*60*1000).Scan(&hourlyIP)
+	if recent > 0 || hourlyEmail >= 3 || hourlyIP >= 10 {
+		writeError(w, http.StatusTooManyRequests, "验证码发送过于频繁：同一邮箱每分钟最多一次、每小时最多三次；同一网络地址每小时最多十次。")
+		return
+	}
+	if _, err := s.DB.ExecContext(r.Context(), `INSERT INTO email_code_send_attempts(email,purpose,client_ip,created_at) VALUES(?,?,?,?)`, email, purpose, ip, now); err != nil {
+		internalError(w, err)
 		return
 	}
 	raw := make([]byte, 4)
@@ -1268,7 +1314,6 @@ func (s *Server) issueEmailCode(w http.ResponseWriter, r *http.Request, email, p
 		return
 	}
 	code := fmt.Sprintf("%06d", (int(raw[0])<<16|int(raw[1])<<8|int(raw[2]))%1000000)
-	now := time.Now().UnixMilli()
 	if _, err := s.DB.ExecContext(r.Context(), `INSERT INTO email_codes(email,purpose,user_id,code_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)`, email, purpose, nullIfEmpty(userID), emailCodeHash(s.Cfg.AppSecret, email, purpose, code), now+10*60*1000, now); err != nil {
 		internalError(w, err)
 		return
@@ -1288,6 +1333,22 @@ func (s *Server) issueEmailCode(w http.ResponseWriter, r *http.Request, email, p
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "expires_in": 600})
+}
+
+func requestClientIP(r *http.Request) string {
+	remote, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		if ip := net.ParseIP(remote); ip != nil && ip.IsLoopback() {
+			// The deployment Nginx listens on the same host and overwrites X-Real-IP.
+			if forwarded := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); forwarded != nil {
+				return forwarded.String()
+			}
+		}
+		if ip := net.ParseIP(remote); ip != nil {
+			return ip.String()
+		}
+	}
+	return "unknown"
 }
 
 func (s *Server) consumeEmailCode(r *http.Request, email, purpose, code, userID string) bool {

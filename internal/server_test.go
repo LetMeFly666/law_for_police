@@ -89,7 +89,7 @@ func TestEmbeddedAdminPage(t *testing.T) {
 		t.Fatalf("GET /admin status = %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"法律学习本 · 管理后台", "ADMIN_TOKEN", "/api/admin/overview", "用户列表"} {
+	for _, want := range []string{"法律学习本 · 管理后台", "ADMIN_TOKEN", "/api/admin/overview", "用户列表", "data-recovery-user", "重置连接码"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("embedded admin page missing %q", want)
 		}
@@ -105,6 +105,12 @@ func TestAdminAPIRequiresToken(t *testing.T) {
 		if w.Code != 403 {
 			t.Errorf("GET %s without token status = %d, want 403", path, w.Code)
 		}
+	}
+	r := httptest.NewRequest("POST", "/api/admin/users/example/recovery-code", strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Fatalf("admin recovery reset without token status = %d, want 403", w.Code)
 	}
 }
 
@@ -196,6 +202,33 @@ func TestEmbeddedPWAAssets(t *testing.T) {
 		}
 		if !strings.Contains(w.Header().Get("Content-Type"), contentType) {
 			t.Errorf("GET %s Content-Type = %q, want containing %q", path, w.Header().Get("Content-Type"), contentType)
+		}
+	}
+}
+
+func TestRequestClientIPUsesTrustedLocalProxyHeader(t *testing.T) {
+	r := httptest.NewRequest("POST", "/", nil)
+	r.RemoteAddr = "127.0.0.1:8787"
+	r.Header.Set("X-Real-IP", "203.0.113.8")
+	if got := requestClientIP(r); got != "203.0.113.8" {
+		t.Fatalf("requestClientIP() = %q, want trusted proxy IP", got)
+	}
+	r.RemoteAddr = "198.51.100.4:12345"
+	r.Header.Set("X-Real-IP", "203.0.113.8")
+	if got := requestClientIP(r); got != "198.51.100.4" {
+		t.Fatalf("requestClientIP() trusted untrusted forwarded header: %q", got)
+	}
+}
+
+func TestMasteredQuestionDoesNotRenderRepeatActions(t *testing.T) {
+	s := NewServer(nil, Config{})
+	r := httptest.NewRequest("GET", "/app.js", nil)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	body := w.Body.String()
+	for _, want := range []string{"if(m.status==='mastered')", "if(old.status==='mastered'){renderSelfCheck(q);return;}", "已掌握</strong><p>已达到掌握标准，无需重复标记。"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("app.js missing mastered guard %q", want)
 		}
 	}
 }
