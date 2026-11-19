@@ -73,7 +73,7 @@ func TestEmbeddedAppScriptContainsDrawingAndStudyFeatures(t *testing.T) {
 		t.Fatalf("GET /app.js status = %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"本题圈画笔记", "红笔", "荧光笔", "撤销一笔", "清空圈画", "study-time", "showAllMyShares"} {
+	for _, want := range []string{"本题圈画笔记", "画笔", "荧光笔", "撤销一笔", "恢复一笔", "清空本题圈画", "redoStack", "study-time", "showAllMyShares"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("embedded app script missing %q", want)
 		}
@@ -127,5 +127,75 @@ func TestPageArgsBounds(t *testing.T) {
 	limit, offset = pageArgs(r)
 	if limit != 50 || offset != 1000000 {
 		t.Fatalf("pageArgs() = (%d,%d), want (50,1000000)", limit, offset)
+	}
+}
+
+func TestRecoveryCodeEncryptionRoundTripAndAuthentication(t *testing.T) {
+	secret := "a-long-test-secret-that-is-not-used-in-production"
+	code, err := randomRecoveryCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := encryptRecoveryCode(secret, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ciphertext == code || strings.Contains(ciphertext, code) {
+		t.Fatal("recovery code ciphertext must not contain the plaintext code")
+	}
+	got, err := decryptRecoveryCode(secret, ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != code {
+		t.Fatalf("decrypted code = %q, want %q", got, code)
+	}
+	if _, err := decryptRecoveryCode("another-secret-that-is-also-long-enough", ciphertext); err == nil {
+		t.Fatal("decrypting with a different APP_SECRET must fail")
+	}
+}
+
+func TestFeedbackNotificationRequiresConfiguredRecipient(t *testing.T) {
+	if (Config{SMTPHost: "smtp.example.com", SMTPFrom: "from@example.com"}).FeedbackNotificationEnabled() {
+		t.Fatal("feedback email must remain disabled when FEEDBACK_NOTIFICATION_TO is empty")
+	}
+	if !(Config{SMTPHost: "smtp.example.com", SMTPFrom: "from@example.com", FeedbackNotificationTo: "notify@example.com"}).FeedbackNotificationEnabled() {
+		t.Fatal("feedback email should be enabled when SMTP and recipient are configured")
+	}
+}
+
+func TestEmbeddedAppScriptContainsUpdatedDrawingAndSyncFeatures(t *testing.T) {
+	s := NewServer(nil, Config{})
+	r := httptest.NewRequest("GET", "/app.js", nil)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("GET /app.js status = %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"本题圈画笔记", "画笔", "荧光笔", "撤销一笔", "恢复一笔", "redoStack", "refreshRecoveryCode", "textNotePreview"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("embedded app script missing %q", want)
+		}
+	}
+}
+
+func TestEmbeddedPWAAssets(t *testing.T) {
+	s := NewServer(nil, Config{})
+	for path, contentType := range map[string]string{
+		"/manifest.webmanifest":       "application/manifest+json",
+		"/service-worker.js":          "javascript",
+		"/icons/apple-touch-icon.png": "image/png",
+	} {
+		r := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Errorf("GET %s status = %d", path, w.Code)
+			continue
+		}
+		if !strings.Contains(w.Header().Get("Content-Type"), contentType) {
+			t.Errorf("GET %s Content-Type = %q, want containing %q", path, w.Header().Get("Content-Type"), contentType)
+		}
 	}
 }

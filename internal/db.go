@@ -36,6 +36,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS users (
 			id CHAR(36) PRIMARY KEY,
 			recovery_hash CHAR(64) NOT NULL UNIQUE,
+			recovery_code_ciphertext TEXT NULL,
 			nickname VARCHAR(60) NOT NULL DEFAULT '',
 			email VARCHAR(254) NULL UNIQUE,
 			email_verified TINYINT(1) NOT NULL DEFAULT 0,
@@ -130,6 +131,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	for _, column := range []struct{ table, name, ddl string }{
 		{"experiences", "updated_at", "ALTER TABLE experiences ADD COLUMN updated_at BIGINT NOT NULL DEFAULT 0"},
 		{"users", "sync_version", "ALTER TABLE users ADD COLUMN sync_version BIGINT NOT NULL DEFAULT 0"},
+		{"users", "recovery_code_ciphertext", "ALTER TABLE users ADD COLUMN recovery_code_ciphertext TEXT NULL"},
 		{"user_items", "sync_version", "ALTER TABLE user_items ADD COLUMN sync_version BIGINT NOT NULL DEFAULT 0"},
 	} {
 		var count int

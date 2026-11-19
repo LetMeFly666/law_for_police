@@ -139,7 +139,12 @@ func (s *Server) createAnonymous(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO users(id,recovery_hash,nickname,created_at) VALUES(?,?,?,?)`, userID, hash(recovery), nickname, now); err != nil {
+	encryptedRecovery, encErr := encryptRecoveryCode(s.Cfg.AppSecret, recovery)
+	if encErr != nil {
+		internalError(w, encErr)
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO users(id,recovery_hash,recovery_code_ciphertext,nickname,created_at) VALUES(?,?,?,?,?)`, userID, hash(recovery), encryptedRecovery, nickname, now); err != nil {
 		internalError(w, err)
 		return
 	}
@@ -228,8 +233,13 @@ func (s *Server) rotateRecoveryCode(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
+	encrypted, err := encryptRecoveryCode(s.Cfg.AppSecret, code)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
 	id := getIdentity(r)
-	if _, err = s.DB.ExecContext(r.Context(), `UPDATE users SET recovery_hash=? WHERE id=?`, hash(code), id.UserID); err != nil {
+	if _, err = s.DB.ExecContext(r.Context(), `UPDATE users SET recovery_hash=?,recovery_code_ciphertext=? WHERE id=?`, hash(code), encrypted, id.UserID); err != nil {
 		internalError(w, err)
 		return
 	}
@@ -237,17 +247,28 @@ func (s *Server) rotateRecoveryCode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	id := getIdentity(r)
 	var nickname, email string
+	var encrypted sql.NullString
 	var verified bool
 	var devices int
-	err := s.DB.QueryRowContext(r.Context(), `SELECT nickname,COALESCE(email,''),email_verified FROM users WHERE id=?`, id.UserID).Scan(&nickname, &email, &verified)
+	err := s.DB.QueryRowContext(r.Context(), `SELECT nickname,COALESCE(email,''),email_verified,recovery_code_ciphertext FROM users WHERE id=?`, id.UserID).Scan(&nickname, &email, &verified, &encrypted)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM devices WHERE user_id=?`, id.UserID).Scan(&devices)
-	writeJSON(w, http.StatusOK, map[string]any{"user_id": id.UserID, "nickname": nickname, "email": email, "email_verified": verified, "device_count": devices})
+	recoveryCode := ""
+	if encrypted.Valid && encrypted.String != "" {
+		recoveryCode, err = decryptRecoveryCode(s.Cfg.AppSecret, encrypted.String)
+		if err != nil {
+			log.Printf("decrypt recovery code failed user=%s: %v", id.UserID, err)
+			internalError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": id.UserID, "nickname": nickname, "email": email, "email_verified": verified, "device_count": devices, "recovery_code": recoveryCode})
 }
 
 type syncChange struct {
@@ -770,17 +791,18 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) notifyFeedback(nickname, email, category, content, id string) bool {
-	if !s.Cfg.SMTPEnabled() {
+	if !s.Cfg.FeedbackNotificationEnabled() {
 		return false
 	}
+	to := s.Cfg.FeedbackNotificationTo
 	body := fmt.Sprintf("收到新的法律学习本反馈\r\n编号：%s\r\n昵称：%s\r\n联系邮箱：%s\r\n类型：%s\r\n\r\n%s", id, nickname, email, category, content)
-	msg := []byte("To: Tisfy@qq.com\r\nFrom: " + s.Cfg.SMTPFrom + "\r\nSubject: [法律学习本] 新反馈\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body)
+	msg := []byte("To: " + to + "\r\nFrom: " + s.Cfg.SMTPFrom + "\r\nSubject: [法律学习本] 新反馈\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body)
 	addr := net.JoinHostPort(s.Cfg.SMTPHost, s.Cfg.SMTPPort)
 	var auth smtp.Auth
 	if s.Cfg.SMTPUser != "" {
 		auth = smtp.PlainAuth("", s.Cfg.SMTPUser, s.Cfg.SMTPPassword, s.Cfg.SMTPHost)
 	}
-	if err := smtp.SendMail(addr, auth, s.Cfg.SMTPFrom, []string{"Tisfy@qq.com"}, msg); err != nil {
+	if err := smtp.SendMail(addr, auth, s.Cfg.SMTPFrom, []string{to}, msg); err != nil {
 		log.Printf("send feedback notification failed id=%s: %v", id, err)
 		return false
 	}
@@ -1209,7 +1231,12 @@ func (s *Server) verifyEmailRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), `UPDATE users SET recovery_hash=? WHERE id=?`, hash(code), userID); err != nil {
+	encrypted, encErr := encryptRecoveryCode(s.Cfg.AppSecret, code)
+	if encErr != nil {
+		internalError(w, encErr)
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `UPDATE users SET recovery_hash=?,recovery_code_ciphertext=? WHERE id=?`, hash(code), encrypted, userID); err != nil {
 		internalError(w, err)
 		return
 	}
@@ -1307,9 +1334,14 @@ func (s *Server) staticFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	typ := mime.TypeByExtension("." + fileExt(path))
+	if strings.HasSuffix(path, ".webmanifest") {
+		typ = "application/manifest+json; charset=utf-8"
+	}
 	if typ == "" {
 		if strings.HasSuffix(path, ".js") {
 			typ = "text/javascript; charset=utf-8"
+		} else if strings.HasSuffix(path, ".webmanifest") {
+			typ = "application/manifest+json; charset=utf-8"
 		} else if strings.HasSuffix(path, ".json") {
 			typ = "application/json; charset=utf-8"
 		} else {
