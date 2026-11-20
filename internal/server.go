@@ -795,13 +795,19 @@ func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) myFeedback(w http.ResponseWriter, r *http.Request) {
 	id := getIdentity(r)
-	rows, err := s.DB.QueryContext(r.Context(), `SELECT id,category,content,status,created_at FROM feedback WHERE user_id=? ORDER BY created_at DESC LIMIT 100`, id.UserID)
+	limit, offset := pageArgs(r)
+	var total int
+	if err := s.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM feedback WHERE user_id=?`, id.UserID).Scan(&total); err != nil {
+		internalError(w, err)
+		return
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT id,category,content,status,created_at FROM feedback WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?`, id.UserID, limit, offset)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
 	defer rows.Close()
-	items := make([]map[string]any, 0)
+	items := make([]map[string]any, 0, limit)
 	for rows.Next() {
 		var id, category, content, status string
 		var createdAt int64
@@ -815,7 +821,7 @@ func (s *Server) myFeedback(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "limit": limit, "offset": offset})
 }
 
 func (s *Server) notifyFeedback(nickname, email, category, content, id string) bool {

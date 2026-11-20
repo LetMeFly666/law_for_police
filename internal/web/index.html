@@ -78,7 +78,7 @@
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><div class="brand-mark" id="brandMark" title="在更多设置中启用后，双击进入 / 退出全屏">法</div><div><h1>法律基础知识 · 学习本</h1><p>题库驱动复习 · 记录掌握程度 · 设备自动同步</p></div></div>
+    <div class="brand"><div class="brand-mark" id="brandMark" title="连续点击三次进入管理员页面">法</div><div><h1>法律基础知识 · 学习本</h1><p>题库驱动复习 · 记录掌握程度 · 设备自动同步</p></div></div>
     <div class="top-actions">
       <button class="btn" id="syncOpen">⇄ 多设备同步</button>
       <button class="btn" id="favoritesOpen">★ 收藏夹 <span id="favCount">0</span></button>
@@ -167,7 +167,7 @@
 <div class="modal-backdrop" id="historyModal"><div class="modal"><div class="modal-head"><h2>自测记录</h2><button class="btn" data-close="historyModal">关闭</button></div><div id="historySummary" class="small-muted"></div><div id="historyList"></div><div class="modal-actions"><button class="btn danger" id="clearHistory">清空自测历史</button></div><p class="small-muted">清空历史不会删除题目掌握状态、笔记和收藏。</p></div></div>
 
 <!-- 我的心得 -->
-<div class="modal-backdrop" id="mySharesModal"><div class="modal"><div class="modal-head"><h2>我的心得</h2><button class="btn" data-close="mySharesModal">关闭</button></div><p>这里展示你在题目下公开发布的学习心得。其他学习者也可以看到这些内容。</p><div id="mySharesList"></div><div class="modal-actions"><button class="btn" id="showAllMyShares">显示所有心得</button></div></div></div>
+<div class="modal-backdrop" id="mySharesModal"><div class="modal"><div class="modal-head"><h2>我的心得</h2><button class="btn" data-close="mySharesModal">关闭</button></div><p>这里展示你在题目下公开发布的学习心得。其他学习者也可以看到这些内容。</p><div id="mySharesList"></div></div></div>
 
 <!-- 反馈 -->
 <div class="modal-backdrop" id="feedbackModal"><div class="modal"><div class="modal-head"><h2>反馈与建议</h2><button class="btn" data-close="feedbackModal">关闭</button></div><p>这里是给开发者的反馈入口。可以提交题目勘误、功能建议、界面问题或其他意见。</p><div class="field"><label for="feedbackCategory">反馈类型</label><select id="feedbackCategory"><option value="题目或答案勘误">题目或答案勘误</option><option value="功能建议">功能建议</option><option value="界面问题">界面问题</option><option value="其他">其他</option></select></div><div class="field"><label for="feedbackContent">具体内容</label><textarea id="feedbackContent" maxlength="3000" placeholder="请尽量描述题目编号、预期行为和实际问题……"></textarea></div><div class="modal-actions"><span class="small-muted" id="feedbackStatus"></span><button class="btn primary" id="sendFeedback">提交建议</button></div><div class="feedback-history"><div class="panel-head"><span>我的历史反馈</span><button class="btn" type="button" id="refreshMyFeedback">刷新</button></div><div id="myFeedbackList" class="share-list"><div class="empty">打开反馈窗口后加载</div></div></div><p class="project-note">熟悉系统开发？欢迎在 <a href="https://github.com/LetMeFly666/law_for_police" target="_blank" rel="noopener noreferrer">GitHub 仓库</a> 提交 Issue 或 Pull Request（PR）。</p></div></div>
