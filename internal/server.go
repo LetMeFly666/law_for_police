@@ -477,9 +477,10 @@ func (s *Server) listExperiences(w http.ResponseWriter, r *http.Request) {
 	}
 	query := `SELECT e.id,e.question_id,COALESCE(NULLIF(u.nickname,''),e.nickname),e.content,e.created_at,e.updated_at,
 		(SELECT COUNT(*) FROM experience_likes l WHERE l.experience_id=e.id) AS likes_count,
-		EXISTS(SELECT 1 FROM experience_likes ml WHERE ml.experience_id=e.id AND ml.user_id=?) AS liked_by_me
+		EXISTS(SELECT 1 FROM experience_likes ml WHERE ml.experience_id=e.id AND ml.user_id=?) AS liked_by_me,
+		(e.user_id=?) AS is_mine
 		FROM experiences e JOIN users u ON u.id=e.user_id WHERE e.question_id=? ORDER BY ` + order + ` LIMIT ? OFFSET ?`
-	rows, err := s.DB.QueryContext(r.Context(), query, id.UserID, qid, limit, offset)
+	rows, err := s.DB.QueryContext(r.Context(), query, id.UserID, id.UserID, qid, limit, offset)
 	if err != nil {
 		internalError(w, err)
 		return
@@ -490,12 +491,12 @@ func (s *Server) listExperiences(w http.ResponseWriter, r *http.Request) {
 		var eid, q, nickname, content string
 		var created, updated int64
 		var likes int
-		var liked bool
-		if err := rows.Scan(&eid, &q, &nickname, &content, &created, &updated, &likes, &liked); err != nil {
+		var liked, isMine bool
+		if err := rows.Scan(&eid, &q, &nickname, &content, &created, &updated, &likes, &liked, &isMine); err != nil {
 			internalError(w, err)
 			return
 		}
-		items = append(items, map[string]any{"id": eid, "question_id": q, "nickname": nickname, "content": content, "created_at": created, "updated_at": updated, "likes_count": likes, "liked_by_me": liked})
+		items = append(items, map[string]any{"id": eid, "question_id": q, "nickname": nickname, "content": content, "created_at": created, "updated_at": updated, "likes_count": likes, "liked_by_me": liked, "is_mine": isMine})
 	}
 	if err := rows.Err(); err != nil {
 		internalError(w, err)
