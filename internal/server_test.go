@@ -6,6 +6,51 @@ import (
 	"testing"
 )
 
+func TestCompareAppVersions(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"0.0.0", "1.0.0", -1},
+		{"1.0.0", "1.0.0", 0},
+		{"1.2.0", "1.1.9", 1},
+		{"2.0.0", "1.99.99", 1},
+	}
+	for _, tc := range cases {
+		if got := compareAppVersions(tc.a, tc.b); got != tc.want {
+			t.Errorf("compareAppVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestAppUpdatesAfterVersion(t *testing.T) {
+	original := appUpdateReleases
+	appUpdateReleases = []appUpdateRelease{
+		{Version: "1.0.0", Title: "first", Items: []string{"first item"}},
+		{Version: "1.0.1", Title: "second", Items: []string{"second item"}},
+	}
+	defer func() { appUpdateReleases = original }()
+	updates := appUpdatesAfter("0.0.0")
+	if len(updates) != 2 || updates[0].Version != "1.0.0" || updates[1].Version != "1.0.1" {
+		t.Fatalf("updates after 0.0.0 = %#v, want both releases", updates)
+	}
+	updates = appUpdatesAfter("1.0.0")
+	if len(updates) != 1 || updates[0].Version != "1.0.1" {
+		t.Fatalf("updates after 1.0.0 = %#v, want only 1.0.1", updates)
+	}
+	if got := len(appUpdatesAfter("1.0.1")); got != 0 {
+		t.Fatalf("updates after latest version = %d, want 0", got)
+	}
+	show, markRead, pending := appUpdateClaim("0.0.0", false)
+	if show || markRead || len(pending) != 0 {
+		t.Fatalf("disabled update claim = (%v, %v, %#v), want no popup and no read marker", show, markRead, pending)
+	}
+	show, markRead, pending = appUpdateClaim("0.0.0", true)
+	if !show || !markRead || len(pending) != 2 {
+		t.Fatalf("enabled update claim = (%v, %v, %#v), want both unseen releases", show, markRead, pending)
+	}
+}
+
 func TestRecoveryCodeEntropyAndNormalization(t *testing.T) {
 	code, err := randomRecoveryCode()
 	if err != nil {
@@ -57,7 +102,7 @@ func TestEmbeddedHomeContainsStudyAndRecoveryUI(t *testing.T) {
 		t.Fatalf("GET / status = %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"const BANK =", `src="/app.js"`, "永久设备连接码", "做题模式（默认）", "logoFullscreenToggle", "studyTime"} {
+	for _, want := range []string{"const BANK =", `src="/app.js"`, "永久设备连接码", "做题模式（默认）", "logoFullscreenToggle", "studyTime", "shuffleOptionsToggle", "showUpdatesToggle", "appUpdateModal"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("embedded home page missing %q", want)
 		}
@@ -73,7 +118,7 @@ func TestEmbeddedAppScriptContainsDrawingAndStudyFeatures(t *testing.T) {
 		t.Fatalf("GET /app.js status = %d", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"本题圈画笔记", "画笔", "荧光笔", "撤销一笔", "恢复一笔", "清空本题圈画", "redoStack", "study-time", "showAllMyShares"} {
+	for _, want := range []string{"本题圈画笔记", "画笔", "荧光笔", "撤销一笔", "恢复一笔", "清空本题圈画", "redoStack", "study-time", "loadMoreMyShares", "displayOptions", "optionOrderCache", "app-updates/claim"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("embedded app script missing %q", want)
 		}
@@ -220,15 +265,15 @@ func TestRequestClientIPUsesTrustedLocalProxyHeader(t *testing.T) {
 	}
 }
 
-func TestMasteredQuestionDoesNotRenderRepeatActions(t *testing.T) {
+func TestMasteredQuestionStaysMasteredAfterAnotherCorrectAnswer(t *testing.T) {
 	s := NewServer(nil, Config{})
 	r := httptest.NewRequest("GET", "/app.js", nil)
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
 	body := w.Body.String()
-	for _, want := range []string{"if(m.status==='mastered')", "if(old.status==='mastered'){renderSelfCheck(q);return;}", "已掌握</strong><p>已达到掌握标准，无需重复标记。"} {
+	for _, want := range []string{"old.status==='mastered'&&correct?'mastered'", "m.status==='mastered'?'':'<button class=\"btn soft\" id=\"selfMastered\">标记掌握</button>'", "✓ 已达到掌握标准，无需重复标记。"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("app.js missing mastered guard %q", want)
+			t.Errorf("app.js missing mastered-state behavior %q", want)
 		}
 	}
 }

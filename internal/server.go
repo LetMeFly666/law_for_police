@@ -39,6 +39,28 @@ type Server struct {
 type identity struct{ UserID, DeviceID string }
 type ctxKey string
 
+// Bump this version for each user-visible release and append a matching entry
+// to appUpdateReleases. Existing accounts start at 0.0.0; new accounts start
+// at this version and therefore do not receive a first-use update popup.
+const currentAppVersion = "1.0.0"
+
+type appUpdateRelease struct {
+	Version string   `json:"version"`
+	Date    string   `json:"date"`
+	Title   string   `json:"title"`
+	Items   []string `json:"items"`
+}
+
+var appUpdateReleases = []appUpdateRelease{{
+	Version: currentAppVersion,
+	Date:    "2026-11-20",
+	Title:   "学习体验与更新提示",
+	Items: []string{
+		"选择题选项乱序：单选题和多选题的选项顺序会随机排列；每个选项仍保留原来的 A/B/C/D 标识，因此标准答案和解析中的字母含义不会改变。",
+		"更新内容弹窗：按版本记录更新说明；展示上次使用后新增的全部版本，多次更新未使用时会合并展示，并可查看历史更新；已读版本保存在账号中，多设备只提示一次。",
+	},
+}}
+
 const identityKey ctxKey = "identity"
 
 type apiError struct {
@@ -72,6 +94,8 @@ func (s *Server) routes() {
 	s.Mux.HandleFunc("GET /api/health", s.health)
 	s.Mux.HandleFunc("POST /api/anonymous", s.createAnonymous)
 	s.Mux.Handle("POST /api/sync/exchange", s.requireAuth(http.HandlerFunc(s.syncExchange)))
+	s.Mux.Handle("POST /api/app-updates/claim", s.requireAuth(http.HandlerFunc(s.claimAppUpdates)))
+	s.Mux.Handle("GET /api/app-updates/history", s.requireAuth(http.HandlerFunc(s.appUpdatesHistory)))
 	s.Mux.Handle("POST /api/sync/join", s.requireAuth(http.HandlerFunc(s.joinByRecoveryCode)))
 	s.Mux.Handle("POST /api/recovery/rotate", s.requireAuth(http.HandlerFunc(s.rotateRecoveryCode)))
 	s.Mux.Handle("GET /api/me", s.requireAuth(http.HandlerFunc(s.me)))
@@ -146,7 +170,7 @@ func (s *Server) createAnonymous(w http.ResponseWriter, r *http.Request) {
 		internalError(w, encErr)
 		return
 	}
-	if _, err = tx.ExecContext(r.Context(), `INSERT INTO users(id,recovery_hash,recovery_code_ciphertext,nickname,created_at) VALUES(?,?,?,?,?)`, userID, hash(recovery), encryptedRecovery, nickname, now); err != nil {
+	if _, err = tx.ExecContext(r.Context(), `INSERT INTO users(id,recovery_hash,recovery_code_ciphertext,nickname,created_at,last_seen_app_version) VALUES(?,?,?,?,?,?)`, userID, hash(recovery), encryptedRecovery, nickname, now, currentAppVersion); err != nil {
 		internalError(w, err)
 		return
 	}
@@ -159,6 +183,102 @@ func (s *Server) createAnonymous(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "recovery_code": recovery, "user_id": userID, "nickname": nickname, "created": true})
+}
+
+func compareAppVersions(a, b string) int {
+	parse := func(v string) [3]int {
+		var out [3]int
+		parts := strings.Split(strings.TrimSpace(v), ".")
+		for i := 0; i < len(out) && i < len(parts); i++ {
+			// Ignore prerelease/build suffixes for the simple numeric app version.
+			part := strings.SplitN(parts[i], "-", 2)[0]
+			part = strings.SplitN(part, "+", 2)[0]
+			out[i], _ = strconv.Atoi(part)
+		}
+		return out
+	}
+	x, y := parse(a), parse(b)
+	for i := range x {
+		if x[i] < y[i] {
+			return -1
+		}
+		if x[i] > y[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+func appUpdatesAfter(version string) []appUpdateRelease {
+	out := make([]appUpdateRelease, 0, len(appUpdateReleases))
+	for _, release := range appUpdateReleases {
+		if compareAppVersions(release.Version, version) > 0 {
+			out = append(out, release)
+		}
+	}
+	return out
+}
+
+func appUpdateClaim(previous string, enabled bool) (show, markRead bool, updates []appUpdateRelease) {
+	if !enabled {
+		return false, false, []appUpdateRelease{}
+	}
+	updates = appUpdatesAfter(previous)
+	return len(updates) > 0, true, updates
+}
+
+// claimAppUpdates atomically advances the account-wide last-seen version.
+// The row lock makes simultaneous requests from two devices a single claim.
+func (s *Server) claimAppUpdates(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodPost) {
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &req, 4<<10) {
+		return
+	}
+	id := getIdentity(r)
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	defer tx.Rollback()
+	var previous string
+	if err = tx.QueryRowContext(r.Context(), `SELECT last_seen_app_version FROM users WHERE id=? FOR UPDATE`, id.UserID).Scan(&previous); err != nil {
+		internalError(w, err)
+		return
+	}
+	show, markRead, pending := appUpdateClaim(previous, req.Enabled)
+	// Disabling the popup suppresses it without marking releases as read.
+	// Re-enabling it later will still show every release since the last view.
+	if markRead {
+		if _, err = tx.ExecContext(r.Context(), `UPDATE users SET last_seen_app_version=? WHERE id=?`, currentAppVersion, id.UserID); err != nil {
+			internalError(w, err)
+			return
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		internalError(w, err)
+		return
+	}
+	if !show {
+		pending = []appUpdateRelease{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"show": show, "previous_version": previous,
+		"current_version": currentAppVersion, "updates": pending,
+	})
+}
+
+func (s *Server) appUpdatesHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, r, http.MethodGet)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"current_version": currentAppVersion, "releases": appUpdateReleases})
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {

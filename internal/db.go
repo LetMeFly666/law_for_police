@@ -41,7 +41,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			email VARCHAR(254) NULL UNIQUE,
 			email_verified TINYINT(1) NOT NULL DEFAULT 0,
 			sync_version BIGINT NOT NULL DEFAULT 0,
-			created_at BIGINT NOT NULL
+			created_at BIGINT NOT NULL,
+			last_seen_app_version VARCHAR(32) NOT NULL DEFAULT '0.0.0'
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 		`CREATE TABLE IF NOT EXISTS devices (
 			id CHAR(36) PRIMARY KEY,
@@ -141,6 +142,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		{"experiences", "updated_at", "ALTER TABLE experiences ADD COLUMN updated_at BIGINT NOT NULL DEFAULT 0"},
 		{"users", "sync_version", "ALTER TABLE users ADD COLUMN sync_version BIGINT NOT NULL DEFAULT 0"},
 		{"users", "recovery_code_ciphertext", "ALTER TABLE users ADD COLUMN recovery_code_ciphertext TEXT NULL"},
+		{"users", "last_seen_app_version", "ALTER TABLE users ADD COLUMN last_seen_app_version VARCHAR(32) NOT NULL DEFAULT '0.0.0'"},
 		{"user_items", "sync_version", "ALTER TABLE user_items ADD COLUMN sync_version BIGINT NOT NULL DEFAULT 0"},
 	} {
 		var count int
