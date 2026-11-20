@@ -15,11 +15,32 @@ func TestCompareAppVersions(t *testing.T) {
 		{"1.0.0", "1.0.0", 0},
 		{"1.2.0", "1.1.9", 1},
 		{"2.0.0", "1.99.99", 1},
+		{"1.0.1-beta", "1.0.0", 1},
+		{"1.0.1-beta", "1.0.1", -1},
+		{"1.0.2", "1.0.1-beta", 1},
+		{"1.0.1-beta.2", "1.0.1-beta.10", -1},
 	}
 	for _, tc := range cases {
 		if got := compareAppVersions(tc.a, tc.b); got != tc.want {
 			t.Errorf("compareAppVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
 		}
+	}
+}
+
+func TestCurrentReleaseIncludesBetaAndStable(t *testing.T) {
+	if currentAppVersion != "1.0.2" {
+		t.Fatalf("currentAppVersion = %q, want 1.0.2", currentAppVersion)
+	}
+	updates := appUpdatesAfter("1.0.0")
+	if len(updates) != 2 || updates[0].Version != "1.0.1-beta" || updates[1].Version != "1.0.2" {
+		t.Fatalf("updates after 1.0.0 = %#v, want beta then stable release", updates)
+	}
+	if len(updates[0].Highlights) == 0 || len(updates[1].Highlights) == 0 {
+		t.Fatal("both releases must provide focused highlight keywords")
+	}
+	show, markRead, pending := appUpdateClaim("1.0.0", true)
+	if !show || !markRead || len(pending) != 2 || pending[0].Version != "1.0.1-beta" || pending[1].Version != "1.0.2" {
+		t.Fatalf("claim after 1.0.0 = (%v, %v, %#v), want beta and stable release", show, markRead, pending)
 	}
 }
 

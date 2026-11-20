@@ -47,14 +47,19 @@ function masteryOf(id){return state.mastery[id]||{status:'untested',streak:0,att
 function baseList(){let a=searchText.trim()?BANK.slice():BANK.filter(q=>q.section===section);if(searchText.trim()){const s=searchText.trim().toLowerCase();a=a.filter(q=>(q.question+' '+q.answer+' '+q.explanation+' '+(q.memory||'')+' '+(q.law||'')).toLowerCase().includes(s));}if(filter==='favorites')a=a.filter(q=>isFavorite(q.id));if(filter==='unmastered')a=a.filter(q=>masteryOf(q.id).status!=='mastered');if(filter==='mastered')a=a.filter(q=>masteryOf(q.id).status==='mastered');if(filter==='untested')a=a.filter(q=>masteryOf(q.id).attempts===0);return a;}
 function list(){return baseList();}
 function currentQ(){const a=list();if(!a.length)return null;index=Math.max(0,Math.min(index,a.length-1));return a[index];}
-function displayAnswer(q){if(['判断'].includes(q.type))return q.answer==='√'?'正确（√）':'错误（×）';if(q.type==='单选'){const o=(q.options||[]).find(x=>x.key===q.answer);return o?`${q.answer}．${o.text}`:q.answer;}if(q.type==='多选')return q.answer.split('').map(k=>{const o=(q.options||[]).find(x=>x.key===k);return o?`${k}．${o.text}`:k;}).join('\n');return q.answer;}
 function questionOptions(q){if(q.type==='判断')return [{key:'√',text:'正确'},{key:'×',text:'错误'}];return q.options||[];}
-// Shuffle the visual order, but deliberately keep each option's original key.
-// Answer keys and explanations in the question bank therefore continue to refer
-// to the same A/B/C/D choice even when that choice appears in another position.
-function displayOptions(q){
-  const options=questionOptions(q);
-  if(state.settings.shuffleOptions===false||!['单选','多选'].includes(q.type)||options.length<2)return options;
+function remapOptionReferences(text,keyMap){
+  if(!text||!keyMap)return String(text||'');
+  // In Chinese explanations, A/B/C/D (including a compact answer such as
+  // ABD or ABCD) are option references. Only replace standalone option tokens;
+  // Latin words such as DNA are left untouched.
+  return String(text).replace(/(^|[^A-Za-z0-9])([A-D]{1,4})(?=$|[^A-Za-z0-9])/g,(whole,prefix,keys)=>prefix+[...keys].map(key=>keyMap[key]||key).sort().join(''));
+}
+function optionPresentation(q){
+  const options=questionOptions(q),identity=Object.fromEntries(options.map(o=>[o.key,o.key]));
+  if(state.settings.shuffleOptions===false||!['单选','多选'].includes(q.type)||options.length<2){
+    return {options:options.map(o=>({...o,originalKey:o.key})),keyMap:identity,answer:q.answer,explanation:q.explanation,caveat:q.caveat||'',memory:q.memory||''};
+  }
   let order=optionOrderCache.get(q.id);
   const keys=options.map(o=>o.key);
   if(!order||order.length!==keys.length||order.some(k=>!keys.includes(k))){
@@ -63,8 +68,25 @@ function displayOptions(q){
     if(order.every((key,i)=>key===keys[i]))order.push(order.shift());
     optionOrderCache.set(q.id,order);
   }
+  // Shuffle the option CONTENT, then assign the visible labels in normal order.
+  // Example: original A/B/C -> order A/C/B gives A/B/C labels, with original
+  // A->A, C->B, B->C. The correct answer AB therefore becomes AC.
+  const keyMap={};
   const byKey=new Map(options.map(o=>[o.key,o]));
-  return order.map(key=>byKey.get(key)).filter(Boolean);
+  const display=order.map((originalKey,i)=>{
+    const visibleKey=keys[i];keyMap[originalKey]=visibleKey;
+    return {...byKey.get(originalKey),originalKey,key:visibleKey};
+  });
+  const answer=String(q.answer||'').split('').map(k=>keyMap[k]||k).sort((a,b)=>keys.indexOf(a)-keys.indexOf(b)).join('');
+  return {options:display,keyMap,answer,explanation:remapOptionReferences(q.explanation,keyMap),caveat:remapOptionReferences(q.caveat,keyMap),memory:remapOptionReferences(q.memory,keyMap)};
+}
+function displayOptions(q){return optionPresentation(q).options;}
+function displayAnswer(q,presentation=optionPresentation(q)){
+  if(['判断'].includes(q.type))return q.answer==='√'?'正确（√）':'错误（×）';
+  const answer=presentation.answer;
+  if(q.type==='单选'){const o=presentation.options.find(x=>x.key===answer);return o?`${answer}．${o.text}`:answer;}
+  if(q.type==='多选')return answer.split('').map(k=>{const o=presentation.options.find(x=>x.key===k);return o?`${k}．${o.text}`:k;}).join('\n');
+  return q.answer;
 }
 function renderAll(){$('studyMode').classList.toggle('active',mode==='study');$('quizMode').classList.toggle('active',mode==='quiz');$('modeDescription').textContent=mode==='study'?'背题模式：答案、解析和题友心得默认展开。':'做题模式：选择选项后提交，系统自动判分并记录。';$('listFilter').value=filter;$('searchInput').value=searchText;$('statusFilters').querySelectorAll('.chip').forEach(x=>x.classList.toggle('active',x.dataset.status===filter));$('jumpHolder').classList.toggle('open',!!state.settings.jumpOpen);$('jumpToggle').innerHTML=state.settings.jumpOpen?'收起题号导航 <span>⌃</span>':'展开题号导航 <span>⌄</span>';renderSections();renderJump();renderSearchResults();renderQuestion();renderStats();}
 function renderSections(){const el=$('sectionTabs');el.innerHTML='';for(const s of SECTIONS){const n=BANK.filter(q=>q.section===s).length;const b=document.createElement('button');b.className='section-tab'+(s===section?' active':'');b.innerHTML=`<span>${s}</span><span class="section-count">${n}题</span>`;b.onclick=()=>{section=s;index=0;answerVisible=mode==='study';selected.clear();saveState();renderAll();};el.appendChild(b);}}
@@ -105,12 +127,12 @@ function renderTextNotePreview(q){
   box.innerHTML=`<div class="text-note-head"><strong>✎ 我的文字笔记</strong>${editing?'<button class="btn" id="finishInlineNote" type="button">完成</button>':`<button class="btn" id="editInlineNote" type="button">${text?'编辑':'添加笔记'}</button>`}</div>${editing?`<textarea id="inlineNoteText" class="inline-note-editor" placeholder="记录理解、关键词、易错点……仅自己可见，自动保存">${esc(state.notes[q.id]?.text||'')}</textarea><div class="small-muted" id="inlineNoteSaved">停止输入后自动保存</div>`:text?`<div class="text-note-content">${esc(text)}</div>`:'<div class="small-muted">还没有文字笔记，可以直接在这里添加。</div>'}`;
   box.classList.remove('hidden');
 }
-function renderAnswer(q){const box=$('answerArea');box.classList.remove('hidden');const h=q.highlights||{};let result='';if(lastResult!==null)result=`<div class="answer-main" style="color:${lastResult?'var(--green)':'var(--red)'}">${lastResult?'✓ 本次作答正确':'✕ 本次作答不正确'}</div>`;let html=`<div class="answer-head"><span>参考答案与解析</span><span class="tag green">标准答案</span></div><div class="answer-content">${result}<div class="answer-main">答案：${highlightText(displayAnswer(q),h)}</div><div class="section-label">解析</div><div>${highlightText(q.explanation,h)}</div>`;if(q.law)html+=`<div class="section-label">法律依据</div><div>${esc(q.law)}</div>`;if(q.caveat)html+=`<div class="section-label">特别提醒</div><div>${highlightText(q.caveat,h)}</div>`;if(h.red?.length||h.green?.length)html+=`<div class="section-label">本题关键词</div><div class="keypoints">${(h.red||[]).map(x=>`<span class="keypoint">易错：${esc(x)}</span>`).join('')}${(h.green||[]).map(x=>`<span class="keypoint good">正确依据：${esc(x)}</span>`).join('')}</div>`;html+='</div>';box.innerHTML=html;}
+function renderAnswer(q){const box=$('answerArea');box.classList.remove('hidden');const h=q.highlights||{};const presentation=optionPresentation(q);let result='';if(lastResult!==null)result=`<div class="answer-main" style="color:${lastResult?'var(--green)':'var(--red)'}">${lastResult?'✓ 本次作答正确':'✕ 本次作答不正确'}</div>`;let html=`<div class="answer-head"><span>参考答案与解析</span><span class="tag green">标准答案</span></div><div class="answer-content">${result}<div class="answer-main">答案：${highlightText(displayAnswer(q,presentation),h)}</div><div class="section-label">解析</div><div>${highlightText(presentation.explanation,h)}</div>`;if(q.law)html+=`<div class="section-label">法律依据</div><div>${esc(q.law)}</div>`;if(presentation.caveat)html+=`<div class="section-label">特别提醒</div><div>${highlightText(presentation.caveat,h)}</div>`;if(h.red?.length||h.green?.length)html+=`<div class="section-label">本题关键词</div><div class="keypoints">${(h.red||[]).map(x=>`<span class="keypoint">易错：${esc(x)}</span>`).join('')}${(h.green||[]).map(x=>`<span class="keypoint good">正确依据：${esc(x)}</span>`).join('')}</div>`;html+='</div>';box.innerHTML=html;}
 function renderSelfCheck(q){const el=$('selfCheckArea');if(!answerVisible){el.innerHTML='';return;}const m=masteryOf(q.id);const count=m.streak||0;const threshold=Number(state.settings.threshold||3);if(mode==='quiz'&&['判断','单选','多选'].includes(q.type)&&lastResult!==null){el.innerHTML=`<div class="self-check"><strong>本次客观题自测已自动记录</strong><p>连续答对 ${count}/${threshold} 次${m.status==='mastered'?'。':''}。答错会将连续正确次数重置。</p>${m.status==='mastered'?'<div class="record-info">✓ 已达到掌握标准，无需重复标记。</div>':''}</div>`;return;}el.innerHTML=`<div class="self-check"><strong>自测：你真正掌握了吗？</strong><p>${['填空','简答','论述'].includes(q.type)?'对照参考答案，按关键词和逻辑判断，不要求逐字一致。':'背题模式下请诚实自评；做题模式下客观题已经自动记录。'} 连续答对 ${count}/${threshold} 次${m.status==='mastered'?'，已达到掌握标准。':''}</p><div class="self-buttons"><button class="btn know" id="selfKnow">✓ 答对一次</button><button class="btn notknow" id="selfNotKnow">↻ 还不熟悉</button>${m.status==='mastered'?'':'<button class="btn soft" id="selfMastered">标记掌握</button>'}</div><div class="record-info">连续答对达到设置次数后自动标记为已掌握；答错会重置连续次数。</div></div>`;}
-function renderMemory(q){$('questionMemory').innerHTML=answerVisible&&q.memory?`<div class="memory-box"><div class="memory-title">助记 / 记忆钩子</div><div class="memory-text">${esc(q.memory)}</div></div>`:'';}
+function renderMemory(q){const memory=optionPresentation(q).memory;$('questionMemory').innerHTML=answerVisible&&memory?`<div class="memory-box"><div class="memory-title">助记 / 记忆钩子</div><div class="memory-text">${esc(memory)}</div></div>`:'';}
 function applySelfTest(q,correct,source){const old=masteryOf(q.id);const t=now();const threshold=Number(state.settings.threshold||3);const streak=correct?(old.streak||0)+1:0;const attempts=(old.attempts||0)+1;const status=old.status==='mastered'&&correct?'mastered':source==='manual-master'?'mastered':streak>=threshold?'mastered':correct?'learning':'weak';state.mastery[q.id]={status,streak,attempts,correct:(old.correct||0)+(correct?1:0),lastResult:correct,updatedAt:t};state.tests.push({id:uid(),qid:q.id,section:q.section,no:q.no,correct,streak,status,source,at:t});saveState();renderJump();renderQuestionAfterTest(q,correct);toast(correct?(status==='mastered'?'已达到掌握标准':'答对，连续正确次数已记录'):'已记录为需复习');}
 function renderQuestionAfterTest(q,correct){answerVisible=true;lastResult=correct;renderQuestion();}
-function submitObjective(){const q=currentQ();if(!q||!selected.size)return;const expected=q.type==='多选'?q.answer.split(''): [q.answer];const got=[...selected];const ok=expected.length===got.length&&expected.every(k=>got.includes(k));answerVisible=true;lastResult=ok;applySelfTest(q,ok,'quiz');}
+function submitObjective(){const q=currentQ();if(!q||!selected.size)return;const presentation=optionPresentation(q);const expected=q.type==='多选'?presentation.answer.split(''):[presentation.answer];const got=[...selected];const ok=expected.length===got.length&&expected.every(k=>got.includes(k));answerVisible=true;lastResult=ok;applySelfTest(q,ok,'quiz');}
 function markFavorite(){const q=currentQ();if(!q)return;const t=now();const saved=!isFavorite(q.id);state.favorites[q.id]={saved,updatedAt:t};saveState();$('favoriteToggle').textContent=saved?'★ 已收藏':'☆ 收藏';renderJump();toast(saved?'已加入收藏夹':'已从收藏夹移除');}
 function saveNote(){const qid=noteEditQID;if(!qid)return;const input=$('inlineNoteText');if(!input)return;const old=state.notes[qid]||{strokes:[]};const t=now();state.notes[qid]={...old,text:input.value,textUpdatedAt:t,updatedAt:Math.max(t,old.updatedAt||0)};const status=$('inlineNoteSaved');if(status)status.textContent='已保存到本机，正在同步云端…';saveState();}
 function openNote(){const q=currentQ();if(!q)return;if(noteEditQID===q.id&&$('inlineNoteText')){$('inlineNoteText').focus();return;}noteEditQID=q.id;renderTextNotePreview(q);requestAnimationFrame(()=>{$('inlineNoteText')?.focus();});}
@@ -213,6 +235,8 @@ function applyRemote(change){
   }else if(key==='settings'){
     if(!state.settings||(state.settings.updatedAt||0)<=updated_at){
       const incoming=value||{};
+      const shuffleSettingChanged=(state.settings?.shuffleOptions!==false)!==(incoming.shuffleOptions!==false);
+      if(shuffleSettingChanged)optionOrderCache.clear();
       const nextSection=incoming.section||section;
       const nextIndex=Number(incoming.index)||0;
       const nextMode=incoming.mode||mode;
@@ -367,10 +391,12 @@ function studyActive(){return !document.hidden&&document.hasFocus();}
 async function reportStudyTime(){if(studyBusy||!navigator.onLine||(!studyBatch&&studyReported<=0))return;studyBusy=true;try{await ensureAnonymous();while(studyBatch||studyReported>0){if(!studyBatch){const delta=Math.min(60000,studyReported);studyBatch={batch_id:uid(),delta_ms:delta};studyReported-=delta;persistStudyQueue();}const d=await api('/api/study-time',{method:'POST',body:studyBatch});studyBatch=null;persistStudyQueue();studyAccumulated=Math.max(studyAccumulated,Number(d.total_ms)||0);localStorage.setItem(STUDY_TOTAL_KEY,String(studyAccumulated));renderStudyTime();}}catch(e){console.warn('study time sync failed; queued locally',e);}finally{studyBusy=false;}}
 function studyTick(){const t=Date.now();if(studyLastTick&&studyActive()){const d=Math.min(5000,t-studyLastTick);studyAccumulated+=d;studyReported+=d;persistStudyQueue();renderStudyTime();if(studyReported>=30000){localStorage.setItem(STUDY_TOTAL_KEY,String(studyAccumulated));reportStudyTime();}}studyLastTick=t;}
 async function loadStudyTime(){try{await ensureAnonymous();const path=studyBatch?'/api/study-time?batch_id='+encodeURIComponent(studyBatch.batch_id):'/api/study-time';const d=await api(path);if(studyBatch&&d.batch_applied){studyBatch=null;persistStudyQueue();}studyAccumulated=(Number(d.total_ms)||0)+studyReported+(studyBatch?.delta_ms||0);localStorage.setItem(STUDY_TOTAL_KEY,String(studyAccumulated));renderStudyTime();if(studyReported||studyBatch)reportStudyTime();}catch{const cached=Math.max(0,Number(localStorage.getItem(STUDY_TOTAL_KEY)||0)||0);studyAccumulated=Math.max(studyAccumulated,cached+studyReported+(studyBatch?.delta_ms||0));renderStudyTime();}}
-let appUpdateCheckDone=false,appUpdateCheckPromise=null;
+let appUpdateCheckDone=false,appUpdateCheckPromise=null,displayedUpdateVersions=new Set();
+function historyReleases(releases,shownVersions){return (Array.isArray(releases)?releases:[]).filter(release=>!shownVersions.has(String(release.version))).slice().reverse();}
 function updateReleaseHTML(release){
+  const highlights=(release.highlights||[]).map(word=>`<span class="update-focus">${esc(word)}</span>`).join('');
   const items=(release.items||[]).map(item=>`<li>${esc(item)}</li>`).join('');
-  return `<section class="update-release"><div class="update-release-meta">v${esc(release.version)} · ${esc(release.date||'')}</div><strong>${esc(release.title||'版本更新')}</strong><ul>${items}</ul></section>`;
+  return `<section class="update-release">${highlights?`<div class="update-release-focus">${highlights}</div>`:''}<div class="update-release-meta">v${esc(release.version)} · ${esc(release.date||'')}</div><strong>${esc(release.title||'版本更新')}</strong><ul>${items}</ul></section>`;
 }
 async function checkForAppUpdates(){
   if(!cloud.token||!navigator.onLine||appUpdateCheckDone)return;
@@ -380,7 +406,8 @@ async function checkForAppUpdates(){
       const result=await api('/api/app-updates/claim',{method:'POST',body:{enabled:state.settings.showUpdates!==false}});
       appUpdateCheckDone=true;
       if(!result.show||!Array.isArray(result.updates)||!result.updates.length)return;
-      $('appUpdateVersion').textContent=`当前版本 v${result.current_version}`;
+      $('appUpdateVersion').textContent=`当前版本 v${result.current_version} · 以下是你上次使用后新增的内容`;
+      displayedUpdateVersions=new Set(result.updates.map(release=>String(release.version)));
       $('appUpdateCurrent').innerHTML=result.updates.map(updateReleaseHTML).join('');
       $('appUpdateHistory').classList.add('hidden');$('appUpdateHistory').innerHTML='';
       $('toggleAppUpdateHistory').textContent='查看历史更新';$('toggleAppUpdateHistory').dataset.loaded='';
@@ -398,7 +425,8 @@ async function toggleAppUpdateHistory(){
   box.innerHTML='<div class="small-muted">正在加载历史更新…</div>';
   try{
     const result=await api('/api/app-updates/history',{cache:'no-store'});
-    box.innerHTML=(result.releases||[]).slice().reverse().map(updateReleaseHTML).join('')||'<div class="empty">暂无历史更新</div>';
+    const older=historyReleases(result.releases,displayedUpdateVersions);
+    box.innerHTML=older.map(updateReleaseHTML).join('')||'<div class="empty">没有更早的历史更新</div>';
     box.dataset.loaded='1';
   }catch(e){box.innerHTML=`<div class="small-muted">加载失败：${esc(e.message)}</div>`;}
 }

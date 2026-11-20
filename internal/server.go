@@ -42,24 +42,51 @@ type ctxKey string
 // Bump this version for each user-visible release and append a matching entry
 // to appUpdateReleases. Existing accounts start at 0.0.0; new accounts start
 // at this version and therefore do not receive a first-use update popup.
-const currentAppVersion = "1.0.0"
+const currentAppVersion = "1.0.2"
 
 type appUpdateRelease struct {
-	Version string   `json:"version"`
-	Date    string   `json:"date"`
-	Title   string   `json:"title"`
-	Items   []string `json:"items"`
+	Version    string   `json:"version"`
+	Date       string   `json:"date"`
+	Title      string   `json:"title"`
+	Highlights []string `json:"highlights"`
+	Items      []string `json:"items"`
 }
 
-var appUpdateReleases = []appUpdateRelease{{
-	Version: currentAppVersion,
-	Date:    "2026-11-20",
-	Title:   "学习体验与更新提示",
-	Items: []string{
-		"选择题选项乱序：单选题和多选题的选项顺序会随机排列；每个选项仍保留原来的 A/B/C/D 标识，因此标准答案和解析中的字母含义不会改变。",
-		"更新内容弹窗：按版本记录更新说明；展示上次使用后新增的全部版本，多次更新未使用时会合并展示，并可查看历史更新；已读版本保存在账号中，多设备只提示一次。",
+// Keep every release here. The previous 1.0.0 release remains available in
+// history; users last seen on 1.0.0 should receive both the beta and stable
+// releases below in a single update dialog.
+var appUpdateReleases = []appUpdateRelease{
+	{
+		Version:    "1.0.0",
+		Date:       "2026-11-20",
+		Title:      "学习体验与更新提示",
+		Highlights: []string{"学习体验", "版本提示"},
+		Items: []string{
+			"增加选择题选项随机排列的初步版本。",
+			"增加按账号记录版本更新内容的弹窗和历史更新入口。",
+		},
 	},
-}}
+	{
+		Version:    "1.0.1-beta",
+		Date:       "2026-11-20",
+		Title:      "更新内容弹窗测试版",
+		Highlights: []string{"更新弹窗", "多版本测试"},
+		Items: []string{
+			"发布 Beta 版本，用于验证多个版本的更新说明能否按版本顺序一次性展示。",
+			"更新内容增加重点词强调，历史更新列表不再重复展示本次弹窗已经显示的版本。",
+		},
+	},
+	{
+		Version:    currentAppVersion,
+		Date:       "2026-11-20",
+		Title:      "选择题选项乱序正式版",
+		Highlights: []string{"选项内容乱序", "答案解析同步"},
+		Items: []string{
+			"单选题、多选题会随机调换选项内容，并重新按 A/B/C/D 编号，避免只记住固定答案字母。",
+			"标准答案会按新编号自动换算，解析中引用的选项字母也会同步换算，确保选项、答案和解析一致。",
+		},
+	},
+}
 
 const identityKey ctxKey = "identity"
 
@@ -186,24 +213,75 @@ func (s *Server) createAnonymous(w http.ResponseWriter, r *http.Request) {
 }
 
 func compareAppVersions(a, b string) int {
-	parse := func(v string) [3]int {
-		var out [3]int
-		parts := strings.Split(strings.TrimSpace(v), ".")
-		for i := 0; i < len(out) && i < len(parts); i++ {
-			// Ignore prerelease/build suffixes for the simple numeric app version.
-			part := strings.SplitN(parts[i], "-", 2)[0]
-			part = strings.SplitN(part, "+", 2)[0]
-			out[i], _ = strconv.Atoi(part)
+	type version struct {
+		core   [3]int
+		pre    []string
+		hasPre bool
+	}
+	parse := func(raw string) version {
+		v := version{}
+		raw = strings.TrimSpace(strings.TrimPrefix(raw, "v"))
+		raw = strings.SplitN(raw, "+", 2)[0] // build metadata does not affect precedence
+		parts := strings.SplitN(raw, "-", 2)
+		for i, part := range strings.Split(parts[0], ".") {
+			if i >= len(v.core) {
+				break
+			}
+			v.core[i], _ = strconv.Atoi(part)
 		}
-		return out
+		if len(parts) == 2 && parts[1] != "" {
+			v.hasPre = true
+			v.pre = strings.Split(parts[1], ".")
+		}
+		return v
 	}
 	x, y := parse(a), parse(b)
-	for i := range x {
-		if x[i] < y[i] {
+	for i := range x.core {
+		if x.core[i] < y.core[i] {
 			return -1
 		}
-		if x[i] > y[i] {
+		if x.core[i] > y.core[i] {
 			return 1
+		}
+	}
+	// A stable release has higher precedence than its prerelease.
+	if x.hasPre != y.hasPre {
+		if x.hasPre {
+			return -1
+		}
+		return 1
+	}
+	if !x.hasPre {
+		return 0
+	}
+	for i := 0; i < len(x.pre) || i < len(y.pre); i++ {
+		if i >= len(x.pre) {
+			return -1
+		}
+		if i >= len(y.pre) {
+			return 1
+		}
+		xn, xe := strconv.Atoi(x.pre[i])
+		yn, ye := strconv.Atoi(y.pre[i])
+		switch {
+		case xe == nil && ye == nil:
+			if xn < yn {
+				return -1
+			}
+			if xn > yn {
+				return 1
+			}
+		case xe == nil && ye != nil:
+			return -1 // numeric identifiers have lower precedence
+		case xe != nil && ye == nil:
+			return 1
+		default:
+			if x.pre[i] < y.pre[i] {
+				return -1
+			}
+			if x.pre[i] > y.pre[i] {
+				return 1
+			}
 		}
 	}
 	return 0
