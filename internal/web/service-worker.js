@@ -1,4 +1,4 @@
-const CACHE_NAME = 'law-study-shell-v6';
+const CACHE_NAME = 'law-study-shell-v7';
 const SHELL = [
   '/',
   '/app.js',
@@ -23,7 +23,7 @@ self.addEventListener('fetch', event => {
 
   event.respondWith((async () => {
     try {
-      const response = await fetch(request);
+      const response = await fetch(new Request(request, { cache: 'no-store' }));
       if (response && response.ok && (request.mode === 'navigate' || SHELL.includes(url.pathname))) {
         const cache = await caches.open(CACHE_NAME);
         cache.put(request, response.clone());

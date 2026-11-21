@@ -42,7 +42,7 @@ type ctxKey string
 // Bump this version for each user-visible release and append a matching entry
 // to appUpdateReleases. Existing accounts start at 0.0.0; new accounts start
 // at this version and therefore do not receive a first-use update popup.
-const currentAppVersion = "1.0.2"
+const currentAppVersion = "1.0.3"
 
 type appUpdateRelease struct {
 	Version    string   `json:"version"`
@@ -77,13 +77,26 @@ var appUpdateReleases = []appUpdateRelease{
 		},
 	},
 	{
-		Version:    currentAppVersion,
+		Version:    "1.0.2",
 		Date:       "2026-11-20",
 		Title:      "选择题选项乱序正式版",
 		Highlights: []string{"选项内容乱序", "答案解析同步"},
 		Items: []string{
 			"单选题、多选题会随机调换选项内容，并重新按 A/B/C/D 编号，避免只记住固定答案字母。",
 			"标准答案会按新编号自动换算，解析中引用的选项字母也会同步换算，确保选项、答案和解析一致。",
+		},
+	},
+	{
+		Version:    currentAppVersion,
+		Date:       "2026-11-21",
+		Title:      "随机练习与移动端学习体验",
+		Highlights: []string{"连续随机做题", "单题答题历史", "设备分页管理"},
+		Items: []string{
+			"新增按题型连续随机做题，当前题型完成后自动进入下一题型；当前浏览器标签页内可以回溯。",
+			"答案区域显示答题红绿记录，点击可查看正确率、折线图和每次作答时间。",
+			"PWA 支持下拉刷新，减少双击放大误触；题库搜索结果高亮匹配内容。",
+			"选择题每次重新加载时会尽量避开上一轮选项顺序；题友心得点赞改为局部更新。",
+			"管理员后台增加设备记录独立分页；多设备恢复支持连接码和邮箱方式切换。",
 		},
 	},
 }
@@ -112,6 +125,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		if r.URL.Path == "/" || r.URL.Path == "/admin" || r.URL.Path == "/admin/" || strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
+		} else if r.URL.Path == "/app.js" || r.URL.Path == "/service-worker.js" {
+			w.Header().Set("Cache-Control", "no-cache")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -143,6 +158,7 @@ func (s *Server) routes() {
 	s.Mux.Handle("GET /api/feedback/mine", s.requireAuth(http.HandlerFunc(s.myFeedback)))
 	s.Mux.HandleFunc("GET /api/admin/overview", s.admin(s.adminOverview))
 	s.Mux.HandleFunc("GET /api/admin/users", s.admin(s.adminUsers))
+	s.Mux.HandleFunc("GET /api/admin/devices", s.admin(s.adminDevices))
 	s.Mux.HandleFunc("GET /api/admin/feedback", s.admin(s.listFeedback))
 	s.Mux.HandleFunc("PATCH /api/admin/feedback/", s.admin(s.updateFeedback))
 	s.Mux.HandleFunc("PATCH /api/admin/users/", s.admin(s.updateAdminUser))
@@ -1276,6 +1292,47 @@ func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 			items[i].Strokes = stat.strokes
 			items[i].NoteBytes = stat.bytes
 		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *Server) adminDevices(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	limit, offset := pageArgs(r)
+	var total int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM devices`).Scan(&total); err != nil {
+		internalError(w, err)
+		return
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT d.id,d.user_id,u.nickname,COALESCE(u.email,''),d.created_at,d.last_seen
+		FROM devices d JOIN users u ON u.id=d.user_id
+		ORDER BY d.last_seen DESC,d.created_at DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	defer rows.Close()
+	type adminDevice struct {
+		ID        string `json:"id"`
+		UserID    string `json:"user_id"`
+		Nickname  string `json:"nickname"`
+		Email     string `json:"email"`
+		CreatedAt int64  `json:"created_at"`
+		LastSeen  int64  `json:"last_seen"`
+	}
+	items := make([]adminDevice, 0, limit)
+	for rows.Next() {
+		var item adminDevice
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Nickname, &item.Email, &item.CreatedAt, &item.LastSeen); err != nil {
+			internalError(w, err)
+			return
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		internalError(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
 }

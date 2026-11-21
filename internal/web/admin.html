@@ -38,6 +38,11 @@
       <div class="pager"><button class="secondary" id="prev" disabled>上一页</button><span id="page">—</span><button class="secondary" id="next" disabled>下一页</button></div>
     </section>
     <section class="panel">
+      <div class="panel-title"><h2>设备管理</h2><span id="deviceTotal" class="muted"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>所属账号</th><th>邮箱</th><th>设备 ID</th><th>创建时间</th><th>最近活跃</th></tr></thead><tbody id="devices"><tr><td colspan="5" class="empty">尚未加载</td></tr></tbody></table></div>
+      <div class="pager"><button class="secondary" id="prevDevices" disabled>上一页</button><span id="devicePage">—</span><button class="secondary" id="nextDevices" disabled>下一页</button></div>
+    </section>
+    <section class="panel">
       <div class="panel-title"><h2>用户反馈</h2><button class="secondary" id="refreshFeedback">刷新反馈</button></div>
       <div id="feedback"><div class="empty">尚未加载</div></div>
     </section>
@@ -45,7 +50,7 @@
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const state = {token:sessionStorage.getItem('lawStudyAdminToken')||'',offset:0,limit:50,total:0};
+  const state = {token:sessionStorage.getItem('lawStudyAdminToken')||'',offset:0,limit:50,total:0,deviceOffset:0,deviceLimit:50,deviceTotal:0};
   $('adminToken').value=state.token;
   function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function time(v){return v?new Date(v).toLocaleString():'—';}
@@ -71,6 +76,16 @@
     const start=d.total?state.offset+1:0,end=Math.min(state.offset+state.limit,d.total);
     $('page').textContent=`${start}–${end} / ${d.total}`;$('prev').disabled=state.offset<=0;$('next').disabled=state.offset+state.limit>=d.total;
   }
+  function renderDevices(items){
+    if(!items.length){$('devices').innerHTML='<tr><td colspan="5" class="empty">没有设备记录</td></tr>';return;}
+    $('devices').innerHTML=items.map(d=>`<tr><td><strong>${esc(d.nickname||'未设置昵称')}</strong><div class="id">${esc(d.user_id)}</div></td><td>${esc(d.email||'—')}</td><td><div class="id">${esc(d.id)}</div></td><td>${time(d.created_at)}</td><td>${time(d.last_seen)}</td></tr>`).join('');
+  }
+  async function loadDevices(){
+    const d=await api(`/api/admin/devices?limit=${state.deviceLimit}&offset=${state.deviceOffset}`);state.deviceTotal=d.total;
+    renderDevices(d.items||[]);$('deviceTotal').textContent=`共 ${d.total} 台设备`;
+    const start=d.total?state.deviceOffset+1:0,end=Math.min(state.deviceOffset+state.deviceLimit,d.total);
+    $('devicePage').textContent=`${start}–${end} / ${d.total}`;$('prevDevices').disabled=state.deviceOffset<=0;$('nextDevices').disabled=state.deviceOffset+state.deviceLimit>=d.total;
+  }
   async function loadFeedback(){
     const items=await api('/api/admin/feedback');const box=$('feedback');
     if(!items.length){box.innerHTML='<div class="empty">暂无反馈</div>';return;}
@@ -79,7 +94,7 @@
   async function loadAll(){
     state.token=$('adminToken').value.trim();if(!state.token){setStatus('请先输入 ADMIN_TOKEN。',true);return;}
     $('load').disabled=true;setStatus('正在验证令牌并读取 MySQL 统计…');
-    try{sessionStorage.setItem('lawStudyAdminToken',state.token);const [overview]=await Promise.all([api('/api/admin/overview')]);renderMetrics(overview);await Promise.all([loadUsers(),loadFeedback()]);setStatus('验证成功。后台统计已从 MySQL 实时读取。');}
+    try{sessionStorage.setItem('lawStudyAdminToken',state.token);const [overview]=await Promise.all([api('/api/admin/overview')]);renderMetrics(overview);await Promise.all([loadUsers(),loadDevices(),loadFeedback()]);setStatus('验证成功。后台统计已从 MySQL 实时读取。');}
     catch(e){setStatus(e.message,true);$('metrics').innerHTML='<div class="empty">无法读取数据</div>';$('users').innerHTML='<tr><td colspan="11" class="empty">请检查令牌或服务端日志</td></tr>';}
     finally{$('load').disabled=false;}
   }
@@ -87,6 +102,8 @@
   $('forget').onclick=()=>{sessionStorage.removeItem('lawStudyAdminToken');state.token='';$('adminToken').value='';setStatus('已清除当前标签页中的令牌。');};
   $('prev').onclick=async()=>{state.offset=Math.max(0,state.offset-state.limit);try{await loadUsers();}catch(e){setStatus(e.message,true);}};
   $('next').onclick=async()=>{state.offset+=state.limit;try{await loadUsers();}catch(e){setStatus(e.message,true);}};
+  $('prevDevices').onclick=async()=>{state.deviceOffset=Math.max(0,state.deviceOffset-state.deviceLimit);try{await loadDevices();}catch(e){setStatus(e.message,true);}};
+  $('nextDevices').onclick=async()=>{state.deviceOffset+=state.deviceLimit;try{await loadDevices();}catch(e){setStatus(e.message,true);}};
   $('refreshFeedback').onclick=async()=>{try{await loadFeedback();setStatus('反馈列表已刷新。');}catch(e){setStatus(e.message,true);}};
   $('feedback').addEventListener('click',async e=>{const b=e.target.closest('[data-feedback]');if(!b)return;try{await api('/api/admin/feedback/'+encodeURIComponent(b.dataset.feedback),{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:b.dataset.status})});await loadFeedback();setStatus('反馈状态已更新。');}catch(err){setStatus(err.message,true);}});
   $('users').addEventListener('click',async e=>{const recovery=e.target.closest('[data-recovery-user]');if(recovery){if(!confirm('将立即生成新的永久设备连接码，旧连接码立即失效。请确认用户身份，并通过安全渠道把新码交给用户。继续吗？'))return;try{const d=await api('/api/admin/users/'+encodeURIComponent(recovery.dataset.recoveryUser)+'/recovery-code',{method:'POST'});prompt('新的永久设备连接码（仅显示这一次，请立即复制并安全交给用户）：',d.recovery_code);setStatus('已重置连接码。旧码已失效，新码请立即交给用户。');}catch(err){setStatus(err.message,true);}return;}const b=e.target.closest('[data-study-user]');if(!b)return;const current=(Number(b.dataset.studyMs)||0)/60000;const value=prompt('设置该用户的累计学习时长（分钟），可填写小数：',String(current.toFixed(1)));if(value===null)return;const minutes=Number(value);if(!Number.isFinite(minutes)||minutes<0){setStatus('学习时长必须是非负数字。',true);return;}try{await api('/api/admin/users/'+encodeURIComponent(b.dataset.studyUser)+'/study-time',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({total_ms:Math.round(minutes*60000)})});await loadUsers();setStatus('学习时长已修改。');}catch(err){setStatus(err.message,true);}});

@@ -86,6 +86,19 @@
 .update-history-toggle{display:flex;justify-content:flex-start;margin-top:10px}
 .update-history{border-top:1px solid var(--line);margin-top:10px;padding-top:5px}
 </style>
+
+<style>
+html,body,button,a,input,select,textarea,.btn,.option{touch-action:manipulation}
+.pwa-standalone{overscroll-behavior-y:contain}
+.pull-refresh-indicator{position:fixed;z-index:95;top:calc(env(safe-area-inset-top) + 8px);left:50%;transform:translate(-50%,-160%);opacity:0;pointer-events:none;padding:8px 14px;border-radius:999px;background:#20283b;color:#fff;font-size:12px;box-shadow:0 5px 20px #0002;transition:transform .16s ease,opacity .16s ease}
+.pwa-standalone .pull-refresh-indicator.visible{transform:translate(-50%,0);opacity:1}
+.pwa-standalone .pull-refresh-indicator.ready{background:#16835b}
+.search-result span{display:block;line-height:1.5}.search-hit{background:#fff0a8;color:#7a4b00;border-radius:3px;font-weight:850;padding:0 1px}
+.attempt-history-strip{display:flex;align-items:center;gap:8px;max-width:100%;margin-top:8px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:#fbfcff;color:var(--text);font:inherit;text-align:left;cursor:pointer;touch-action:manipulation}
+.attempt-history-label{font-size:11px;font-weight:800;white-space:nowrap}.attempt-dots{display:flex;align-items:center;gap:4px;min-width:0;flex-wrap:wrap}.attempt-dot{display:inline-block;width:7px;height:7px;flex:0 0 7px;border-radius:50%}.attempt-dot.correct{background:#159568}.attempt-dot.wrong{background:#d94b55}.attempt-history-count{font-size:10px;color:var(--muted);white-space:nowrap}.attempt-history-empty{margin-top:7px;font-size:11px;color:var(--muted)}
+.attempt-chart-wrap{margin:12px 0 16px;overflow:hidden;border:1px solid var(--line);border-radius:10px;background:#fbfcff}.attempt-chart{display:block;width:100%;height:auto;min-height:120px}.history-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+.recovery-method-toggle{margin-top:14px;border:0;padding:4px 0;background:transparent;color:var(--blue);font-size:12px;font-weight:800;cursor:pointer;text-align:left}.btn.active{background:var(--blue-soft);border-color:var(--blue);color:var(--blue)}
+</style>
 </head>
 <body>
 <div class="app">
@@ -113,7 +126,7 @@
     </div>
     <div class="card study-panel">
       <div><div class="mode-tabs"><button id="studyMode">背题模式</button><button id="quizMode" class="active">做题模式（默认）</button></div><p class="small-muted" id="modeDescription">默认做题模式：选择选项后提交答案；需要看答案时再切换到背题模式。</p></div>
-      <div class="study-controls"><select class="select" id="listFilter" aria-label="题目筛选"><option value="all">全部题目</option><option value="unmastered">只看未掌握</option><option value="mastered">只看已掌握</option><option value="favorites">只看收藏</option><option value="untested">只看未自测</option></select><button class="btn soft" id="randomBtn">随机一题</button><button class="btn" id="historyOpen">自测记录</button></div>
+      <div class="study-controls"><select class="select" id="listFilter" aria-label="题目筛选"><option value="all">全部题目</option><option value="unmastered">只看未掌握</option><option value="mastered">只看已掌握</option><option value="favorites">只看收藏</option><option value="untested">只看未自测</option></select><button class="btn soft" id="randomBtn" aria-pressed="false">随机做题：关闭</button><button class="btn" id="historyOpen">自测记录</button></div>
       <div class="status-line"><i id="cloudDot" class="status-dot"></i><span id="cloudStatus">正在连接学习空间…</span></div>
     </div>
   </section>
@@ -157,6 +170,7 @@
 
 <div class="bottom-bar"><div class="bottom-inner"><div class="bottom-info"><strong id="bottomTitle">判断题 · 1/20</strong><span id="bottomSub">共 110 题</span></div><div class="bottom-controls"><button class="btn" id="prevBtn">← 上一题</button><button class="btn primary" id="nextBtn">下一题 →</button></div></div></div>
 <div id="toast" class="toast"></div>
+<div id="pullRefreshIndicator" class="pull-refresh-indicator" aria-live="polite">↓ 下拉刷新</div>
 
 </div>
 
@@ -166,7 +180,7 @@
 <div class="status-line"><i id="syncModalDot" class="status-dot"></i><span id="syncModalStatus">正在连接服务端…</span></div>
 <div class="sync-choice"><button id="syncCreateChoice"><strong>同步到其他设备 →</strong><span>复制连接码，在另一台设备上完成同步。</span></button><button id="syncJoinChoice"><strong>从其他设备同步到此设备 ←</strong><span>粘贴另一台设备提供的连接码。</span></button></div>
 <div id="syncCreatePanel" class="hidden"><div class="section-label">本账号永久设备连接码</div><div class="recovery-code" id="deviceCode">正在读取…</div><p>这是长期有效的账号恢复密钥，不是临时验证码。请勿发给他人；轮换后旧码立即失效，其他已登录设备会自动更新。</p><div class="small-muted" id="syncCodeStatus">正在读取账号当前连接码…</div><div class="modal-actions"><button class="btn" id="copyDeviceCode">复制永久连接码</button><button class="btn soft" id="newDeviceCode">轮换连接码</button></div></div>
-<div id="syncJoinPanel" class="hidden"><div class="field"><label for="deviceCodeInput">输入永久设备连接码</label><input id="deviceCodeInput" type="text" maxlength="64" placeholder="粘贴另一台设备显示的永久连接码" autocapitalize="characters" autocomplete="off"></div><div class="modal-actions"><button class="btn primary" id="joinDevice">恢复账号并同步</button></div><hr><div class="field"><label for="recoveryEmailInput">已绑定邮箱找回（选填）</label><input id="recoveryEmailInput" type="email" placeholder="输入此前验证绑定的邮箱"></div><div class="modal-actions"><button class="btn" id="requestRecoveryEmail">发送找回验证码</button></div><div class="field"><label for="recoveryEmailCode">邮箱验证码</label><input id="recoveryEmailCode" maxlength="6" inputmode="numeric" placeholder="6 位验证码"></div><button class="btn primary" id="verifyRecoveryEmail">验证邮箱并恢复账号</button></div>
+<div id="syncJoinPanel" class="hidden"><div id="deviceRecoveryPanel"><div class="field"><label for="deviceCodeInput">输入永久设备连接码</label><input id="deviceCodeInput" type="text" maxlength="64" placeholder="粘贴另一台设备显示的永久连接码" autocapitalize="characters" autocomplete="off"></div><div class="modal-actions"><button class="btn primary" id="joinDevice">恢复账号并同步</button></div></div><button class="recovery-method-toggle" type="button" id="toggleRecoveryMethod">更多找回方式：邮箱找回</button><div id="emailRecoveryPanel" class="hidden"><div class="field"><label for="recoveryEmailInput">已绑定邮箱找回（可选）</label><input id="recoveryEmailInput" type="email" placeholder="输入此前验证绑定的邮箱"></div><div class="modal-actions"><button class="btn" id="requestRecoveryEmail">发送找回验证码</button></div><div class="field hidden" id="recoveryEmailCodeField"><label for="recoveryEmailCode">邮箱验证码</label><input id="recoveryEmailCode" maxlength="6" inputmode="numeric" placeholder="6 位验证码"></div><button class="btn primary hidden" id="verifyRecoveryEmail">验证邮箱并恢复账号</button></div></div>
 </div></div>
 
 <!-- 个人设置 -->
@@ -177,6 +191,9 @@
 
 <!-- 收藏夹 -->
 <div class="modal-backdrop" id="favoritesModal"><div class="modal"><div class="modal-head"><h2>收藏夹</h2><button class="btn" data-close="favoritesModal">关闭</button></div><div id="favoritesList"></div></div></div>
+
+<!-- 单题答题记录 -->
+<div class="modal-backdrop" id="questionHistoryModal"><div class="modal"><div class="modal-head"><h2 id="questionHistoryTitle">本题答题记录</h2><button class="btn" id="questionHistoryClose">关闭</button></div><div id="questionHistorySummary" class="small-muted"></div><div id="questionHistoryChart" class="attempt-chart-wrap"></div><div class="section-label">完整记录</div><div id="questionHistoryRows"></div></div></div>
 
 <!-- 自测记录 -->
 <div class="modal-backdrop" id="historyModal"><div class="modal"><div class="modal-head"><h2>自测记录</h2><button class="btn" data-close="historyModal">关闭</button></div><div id="historySummary" class="small-muted"></div><div id="historyList"></div><div class="modal-actions"><button class="btn danger" id="clearHistory">清空自测历史</button></div><p class="small-muted">清空历史不会删除题目掌握状态、笔记和收藏。</p></div></div>
