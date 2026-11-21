@@ -42,7 +42,7 @@ type ctxKey string
 // Bump this version for each user-visible release and append a matching entry
 // to appUpdateReleases. Existing accounts start at 0.0.0; new accounts start
 // at this version and therefore do not receive a first-use update popup.
-const currentAppVersion = "1.0.3"
+const currentAppVersion = "1.0.4"
 
 type appUpdateRelease struct {
 	Version    string   `json:"version"`
@@ -87,7 +87,7 @@ var appUpdateReleases = []appUpdateRelease{
 		},
 	},
 	{
-		Version:    currentAppVersion,
+		Version:    "1.0.3",
 		Date:       "2026-11-21",
 		Title:      "随机练习与移动端学习体验",
 		Highlights: []string{"连续随机做题", "单题答题历史", "设备分页管理"},
@@ -97,6 +97,16 @@ var appUpdateReleases = []appUpdateRelease{
 			"PWA 支持下拉刷新，减少双击放大误触；题库搜索结果高亮匹配内容。",
 			"选择题每次重新加载时会尽量避开上一轮选项顺序；题友心得点赞改为局部更新。",
 			"管理员后台增加设备记录独立分页；多设备恢复支持连接码和邮箱方式切换。",
+		},
+	},
+	{
+		Version:    currentAppVersion,
+		Date:       "2026-11-21",
+		Title:      "参考答案修订与找回方式优化",
+		Highlights: []string{"简答与论述参考答案", "邮箱找回"},
+		Items: []string{
+			"按提供的内容修订简答题 4、5 和论述题 1—4 的参考答案，并保留原意与分点结构。",
+			"邮箱找回作为独立恢复方式显示，移除“可选”字样。",
 		},
 	},
 }
